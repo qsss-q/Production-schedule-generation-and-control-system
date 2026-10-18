@@ -1,0 +1,34 @@
+# Экспорт Telegram — служебный материал переписки с куратором.
+# Не относится к коду проекта, в репозитории не нужен.
+ChatExport_2026-10-18/
+ChatExport_*/
+
+# Java / Maven
+target/
+*.class
+*.jar
+*.war
+!.mvn/wrapper/maven-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+nbproject/
+nb-configuration.xml
+
+# Локальные файлы и секреты
+*.log
+.env
+.env.local
+application-local.yml
+
+# ОС
+.DS_Store
+Thumbs.db
+desktop.ini
