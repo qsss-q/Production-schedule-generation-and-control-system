@@ -5,19 +5,27 @@ import java.util.List;
 import java.util.Random;
 
 /**
- * Базовый симулятор коксовой батареи v0 — чистое событийное ядро в памяти.
+ * Симулятор коксовой батареи v0.1 — событийное ядро в памяти с машинами
+ * как отдельными сущностями.
  *
- * Модель (упрощённо, без машин/телеметрии — следующий этап):
+ * <p>Модель:
  * <ul>
- *   <li>печи выдаются в порядке, заданном серийностью (docs/05 §2),
- *       номинальный интервал Δt = T_цикл / N;</li>
- *   <li>после выдачи печь заряжается (chargeMin) и коксовится (cokingMin);
- *       печь должна быть готова к следующему слоту, в противном случае — LATE;</li>
- *   <li>если печь готова раньше слота и ждёт дольше toleranceMin — OVERHOLD;</li>
- *   <li>два вида отказов: выталкивание при выдаче (затягивает выдачный поток
- *       на repairMin) и отказ обогрева камеры (печь в FAULT, коксование
- *       сдвигается).</li>
+ *   <li>выдачи следуют в порядке, заданном серийностью (docs/05 §2),
+ *       номинальный слот k-й выдачи = k·Δt, Δt = T_цикл / N;</li>
+ *   <li>комплект машин: коксовыталкиватель (КВ), двересъёмная машина (ДСМ),
+ *       тушильный вагон (ТВ), углезагрузочный вагон (УВ). Каждая машина
+ *       имеет позицию вдоль батареи, свою кинематику и занятость;</li>
+ *   <li>выдача печи p: ДСМ снимает дверь, КВ и ТВ приезжают к печи. Начало
+ *       выталкивания = max(слот, готовность печи, готовность КВ, ТВ и ДСМ).
+ *       Отказ выталкивания (тугой ход) затягивает операцию — машины заняты
+ *       дольше, поток выдач замедляется;</li>
+ *   <li>после выталкивания печь пуста (EMPTY); ТВ везёт пирог к тушильной
+ *       башне и разгружается; УВ берёт шихту у угольной башни и загружает
+ *       камеру; ДСМ ставит дверь. Коксование начинается с конца загрузки;</li>
+ *   <li>отказ обогрева камеры: печь в FAULT до ремонта, готовность сдвигается.</li>
  * </ul>
+ * Машины — узкое горлышко: если машина занята, следующая выдача/загрузка
+ * ждёт её, печи получают передержку.
  * Все времена — в минутах симуляции. Симуляция детерминирована по seed.
  */
 public final class Simulator {
@@ -27,16 +35,23 @@ public final class Simulator {
     private final double deltaMin;           // Δt выдачи = cycle / N
     private final Random rng;
 
+    // Машины комплекта
+    private final Machine doorMachine;       // ДСМ
+    private final Machine pusher;            // КВ
+    private final Machine quenchCar;         // ТВ
+    private final Machine loadingCar;        // УВ
+
     // Состояние печей (индекс = номер печи 1..N, [0] не используется)
     private final double[] readyAt;          // момент готовности печи к выдаче
     private final double[] heatRecoverAt;    // до этого момента печь в FAULT по обогреву
     private final double[] nextHeatFaultAt;  // запланированный момент следующего отказа обогрева
+    private final double[] dischargeAt;      // факт выдачи (начало выталкивания)
+    private final double[] loadDoneAt;       // факт окончания загрузки камеры
 
     private final List<Event> events = new ArrayList<>();
 
-    private long simMin = 0;      // текущее время симуляции
-    private double busyUntil = 0; // до этого момента машина занята выдачей
-    private int nextIssue = 0;    // порядковый номер следующей выдачи (0-based)
+    private long simMin = 0;
+    private int nextIssue = 0;
 
     private int discharges, lateCount, overholdCount, pushJams, ovenFaults;
 
@@ -48,28 +63,43 @@ public final class Simulator {
         this.readyAt = new double[cfg.ovenCount() + 1];
         this.heatRecoverAt = new double[cfg.ovenCount() + 1];
         this.nextHeatFaultAt = new double[cfg.ovenCount() + 1];
+        this.dischargeAt = new double[cfg.ovenCount() + 1];
+        this.loadDoneAt = new double[cfg.ovenCount() + 1];
 
-        // Инициализация: батарея уже в работе и находится в стационаре.
-        // Печь на позиции k выдачного потока готова к своему слоту
-        // наперёд как раз на "slack" — тот же запас, который повторяется
-        // в следующих оборотах (cycle − загрузка − коксование).
-        double slack = Math.max(0, cfg.cycleMin() - cfg.chargeMin() - cfg.cokingMin());
+        double tower = towerPos();
+        this.doorMachine = new Machine(MachineKind.DOOR_MACHINE, "Двересъёмная машина", 1);
+        this.pusher = new Machine(MachineKind.PUSHING, "Коксовыталкиватель", 1);
+        this.quenchCar = new Machine(MachineKind.QUENCH_CAR, "Тушильный вагон", tower);
+        this.loadingCar = new Machine(MachineKind.LOADING_CAR, "Углезагрузочный вагон", tower);
+
+        // Инициализация: батарея в стационаре. Печь на позиции k выдачного
+        // потока готова к слоту с запасом slack = цикл − коксование −
+        // работы машин после выдачи (выталкивание + загрузка).
+        double slack = Math.max(0, cfg.cycleMin() - cfg.cokingMin() - cfg.pushMin() - cfg.loadMin());
         for (int k = 0; k < order.length; k++) {
             int p = order[k];
+            loadDoneAt[p] = (k + 1) * deltaMin - slack - cfg.cokingMin();
+            dischargeAt[p] = loadDoneAt[p] - cfg.pushMin() - cfg.loadMin();
             readyAt[p] = (k + 1) * deltaMin - slack;
             nextHeatFaultAt[p] = sampleHeatFault(0);
         }
+    }
+
+    /** Позиция тушильной и угольной башни — за торцом батареи, в номерах печей. */
+    public double towerPos() {
+        return cfg.ovenCount() + cfg.towerDistanceM() / cfg.pitchM();
     }
 
     /** Прогнать симуляцию вперёд на minutes минут симуляции. */
     public void advance(long minutes) {
         double target = simMin + minutes;
         while (true) {
-            // Ближайший момент выдачи: слот, но не раньше готовности печи
-            // и не раньше, чем машина освободится от предыдущей выдачи.
             int p = order[nextIssue % order.length];
             double planned = (nextIssue + 1) * deltaMin;
-            double tDischarge = Math.max(Math.max(planned, readyAt[p]), busyUntil);
+
+            // Выдача не раньше слота, готовности печи и готовности машин
+            // (они могут быть заняты предыдущими задачами).
+            double tDischarge = pushStartFor(p, planned);
 
             int heatP = earliestHeatFault();
             double tHeat = heatP < 0 ? Double.MAX_VALUE : nextHeatFaultAt[heatP];
@@ -85,44 +115,100 @@ public final class Simulator {
             } else if (tHeat <= tDischarge) {
                 applyHeatFault(heatP, tHeat);
             } else {
-                doDischarge(p, planned, tDischarge);
+                doDischarge(p, planned);
             }
         }
         simMin = m(target);
     }
 
-    // --- выдача ---
+    // --- выдача печи ---
 
-    private void doDischarge(int p, double planned, double fact) {
-        String pause = "";
+    /** Момент начала выталкивания для выдачи печи p по плану planned. */
+    private double pushStartFor(int p, double planned) {
+        double pitch = cfg.pitchM();
+        double t = Math.max(planned, readyAt[p]);
+        t = Math.max(t, pusher.readyAt(p, pitch));
+        t = Math.max(t, quenchCar.readyAt(p, pitch));
+        // дверь должна быть снята до начала выталкивания
+        t = Math.max(t, doorMachine.readyAt(p, pitch) + cfg.doorRemoveMin());
+        return t;
+    }
+
+    private void doDischarge(int p, double planned) {
+        double pitch = cfg.pitchM();
+        double pushStart = pushStartFor(p, planned);
+
+        // Отказ выталкивания: тугой ход, машина занята дольше.
+        double pushDur = cfg.pushMin();
+        if (rng.nextDouble() < cfg.pushJamProb()) {
+            pushJams++;
+            events.add(new Event(m(pushStart), Event.Type.FAULT, p,
+                    "отказ выталкивания (тугой ход), простой КВ %.0f мин".formatted(cfg.pushJamRepairMin())));
+            pushDur += cfg.pushJamRepairMin();
+        }
+        double pushEnd = pushStart + pushDur;
+
         if (readyAt[p] > planned + 1e-9) {
-            events.add(new Event(m(fact), Event.Type.LATE, p,
+            events.add(new Event(m(pushStart), Event.Type.LATE, p,
                     "печь не была готова к слоту, опоздание %.1f мин".formatted(readyAt[p] - planned)));
             lateCount++;
         }
-
-        if (rng.nextDouble() < cfg.pushJamProb()) {
-            pushJams++;
-            events.add(new Event(m(fact), Event.Type.FAULT, p, "отказ выталкивания (тугой ход), ремонт %.0f мин"
-                    .formatted(cfg.pushJamRepairMin())));
-            fact += cfg.pushJamRepairMin();
-            pause = "после ремонта ";
-        }
-
-        if (fact - readyAt[p] > cfg.toleranceMin() + 1e-9) {
-            events.add(new Event(m(fact), Event.Type.OVERHOLD, p,
-                    "%sпередержка кокса %.0f мин (допуск %.0f)"
-                            .formatted(pause, fact - readyAt[p], cfg.toleranceMin())));
+        if (pushStart - readyAt[p] > cfg.toleranceMin() + 1e-9) {
+            events.add(new Event(m(pushStart), Event.Type.OVERHOLD, p,
+                    "передержка кокса %.0f мин (допуск %.0f)"
+                            .formatted(pushStart - readyAt[p], cfg.toleranceMin())));
             overholdCount++;
         }
 
-        events.add(new Event(m(fact), Event.Type.DISCHARGE, p, "выдача: слот %.1f, факт %.1f"
-                .formatted(planned, fact)));
+        events.add(new Event(m(pushStart), Event.Type.DISCHARGE, p,
+                "выдача: слот %.1f, факт %.1f, выталкивание %.1f мин"
+                        .formatted(planned, pushStart, pushDur)));
         discharges++;
 
-        // После выдачи печь сразу заряжается и коксовится до следующего слота.
-        readyAt[p] = fact + cfg.chargeMin() + cfg.cokingMin();
-        busyUntil = fact + cfg.dischargeMin();
+        // ДСМ снимает дверь до выталкивания.
+        double doorArrive = doorMachine.readyAt(p, pitch);
+        double doorOffEnd = doorArrive + cfg.doorRemoveMin();
+        doorMachine.addBusy(doorMachine.kind.travelMin(doorMachine.pos(), p, pitch)
+                + doorMachine.kind.setupMin + cfg.doorRemoveMin());
+        doorMachine.commit(p, doorOffEnd);
+
+        // КВ выталкивает пирог и остаётся у печи.
+        pusher.addBusy(pusher.kind.travelMin(pusher.pos(), p, pitch)
+                + pusher.kind.setupMin + pushDur);
+        pusher.commit(p, pushEnd);
+
+        // ТВ принимает пирог и едет к тушильной башне, затем разгружается.
+        double tower = towerPos();
+        double tvToTower = quenchCar.kind.travelMin(p, tower, pitch);
+        double tvFree = pushEnd + cfg.takeMin() + tvToTower + cfg.unloadMin();
+        quenchCar.addBusy(quenchCar.kind.travelMin(quenchCar.pos(), p, pitch)
+                + quenchCar.kind.setupMin + cfg.takeMin() + tvToTower + cfg.unloadMin());
+        quenchCar.commit(tower, tvFree);
+
+        // УВ берёт шихту у угольной башни и загружает камеру.
+        double uvToTower = loadingCar.kind.travelMin(loadingCar.pos(), tower, pitch);
+        double uvToOven = loadingCar.kind.travelMin(tower, p, pitch);
+        double loadStart = Math.max(pushEnd,
+                loadingCar.freeAt() + uvToTower + loadingCar.kind.setupMin
+                        + uvToOven + loadingCar.kind.setupMin);
+        double loadEnd = loadStart + cfg.loadMin();
+        loadingCar.addBusy(uvToTower + uvToOven
+                + 2 * loadingCar.kind.setupMin + cfg.loadMin());
+        loadingCar.commit(p, loadEnd);
+
+        // ДСМ возвращается и ставит дверь после загрузки.
+        double doorOnStart = Math.max(loadEnd, doorMachine.readyAt(p, pitch));
+        double doorOnEnd = doorOnStart + cfg.doorInstallMin();
+        doorMachine.addBusy(doorMachine.kind.setupMin + cfg.doorInstallMin());
+        doorMachine.commit(p, doorOnEnd);
+
+        // Печь: коксование начинается с конца загрузки.
+        dischargeAt[p] = pushStart;
+        loadDoneAt[p] = loadEnd;
+        readyAt[p] = loadEnd + cfg.cokingMin();
+
+        events.add(new Event(m(loadEnd), Event.Type.LOADED, p,
+                "камера загружена, коксование %.0f мин".formatted(cfg.cokingMin())));
         nextIssue++;
     }
 
@@ -131,11 +217,11 @@ public final class Simulator {
     private void applyHeatFault(int p, double t) {
         ovenFaults++;
         heatRecoverAt[p] = t + cfg.ovenFaultRepairMin();
-        // Печь сFaultным обогревом коксование не идёт: готовность сдвигается.
+        // Печь с отказом обогрева коксование не идёт: готовность сдвигается.
         readyAt[p] = Math.max(readyAt[p], heatRecoverAt[p]);
         nextHeatFaultAt[p] = sampleHeatFault(t);
-        events.add(new Event(m(t), Event.Type.FAULT, p, "отказ обогрева камеры, печь в простое %.0f мин"
-                .formatted(cfg.ovenFaultRepairMin())));
+        events.add(new Event(m(t), Event.Type.FAULT, p,
+                "отказ обогрева камеры, печь в простое %.0f мин".formatted(cfg.ovenFaultRepairMin())));
     }
 
     /** Экспоненциальное время до следующего отказа обогрева. */
@@ -170,6 +256,7 @@ public final class Simulator {
             throw new IllegalArgumentException("печь %d вне диапазона 1..%d".formatted(ovenNo, cfg.ovenCount()));
         double t = simMin;
         if (t < heatRecoverAt[ovenNo]) return OvenState.FAULT;
+        if (dischargeAt[ovenNo] <= t && t < loadDoneAt[ovenNo]) return OvenState.EMPTY;
         if (t < readyAt[ovenNo]) return OvenState.COKING;
         return (t - readyAt[ovenNo] > cfg.toleranceMin()) ? OvenState.OVERHOLD : OvenState.READY;
     }
@@ -177,6 +264,43 @@ public final class Simulator {
     public long simMinutes() { return simMin; }
 
     public List<Event> events() { return List.copyOf(events); }
+
+    /** Живые объекты машин комплекта (для расчётов и будущего API). */
+    public List<Machine> machines() {
+        return List.of(doorMachine, pusher, quenchCar, loadingCar);
+    }
+
+    /** Срез состояния машин для экспорта в график/карту. */
+    public List<MachineStatus> machineStatus() {
+        return machines().stream().map(this::statusOf).toList();
+    }
+
+    private MachineStatus statusOf(Machine mch) {
+        String where = mch.pos() > cfg.ovenCount() + 1e-9
+                ? switch (mch.kind) {
+                    case QUENCH_CAR -> "тушильная башня";
+                    case LOADING_CAR -> "угольная башня";
+                    default -> "за батареей";
+                }
+                : "печь %.0f".formatted(mch.pos());
+        return new MachineStatus(mch.name, mch.kind.code, where, mch.pos(),
+                (mch.pos() - 1) * cfg.pitchM(), mch.freeAt(), mch.tasksDone(), util(mch));
+    }
+
+    /** Утилизация машины: доля времени в переездах и операциях. */
+    private double util(Machine mch) {
+        return simMin == 0 ? 0 : Math.min(1.0, mch.busyMin() / simMin);
+    }
+
+    /** Срез состояния машины. */
+    public record MachineStatus(String name, String code, String where, double pos, double posM,
+                                double freeAt, int tasksDone, double utilization) {
+        @Override
+        public String toString() {
+            return "%s (%s): %s, %.1f м, свободна с %.1f мин, задач %d, занятость %.0f%%"
+                    .formatted(name, code, where, posM, freeAt, tasksDone, utilization * 100);
+        }
+    }
 
     public int discharges() { return discharges; }
     public int lateCount() { return lateCount; }
