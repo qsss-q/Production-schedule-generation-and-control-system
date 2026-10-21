@@ -3,6 +3,10 @@
 ChatExport_2026-10-18/
 ChatExport_*/
 
+# Фронт живёт в отдельном репозитории команды (github qsss-q, branch front).
+# Синхронизация между командами — через их remote, не через эту репу.
+Production-schedule-generation-and-control-system/
+
 # Java / Maven
 target/
 *.class
