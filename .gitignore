@@ -7,12 +7,15 @@ ChatExport_*/
 # Синхронизация между командами — через их remote, не через эту репу.
 Production-schedule-generation-and-control-system/
 
-# Java / Maven
-target/
+# Java / Gradle
+.gradle/
+build/
+out/
 *.class
 *.jar
 *.war
-!.mvn/wrapper/maven-wrapper.jar
+!gradle/wrapper/gradle-wrapper.jar
+!**/gradle/wrapper/gradle-wrapper.jar
 
 # IDE
 .idea/
