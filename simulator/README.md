@@ -8,7 +8,7 @@
 
 ```bash
 ./gradlew run      # демо: 3 суток, батарея 69 печей, схема 9-2
-./gradlew test     # 22 теста: серийность, слоты, машины, передержки, отказы
+./gradlew test     # 31 тест: серийность, слоты, машины, отказы, API движка
 ```
 
 Java 21 (toolchain подберёт JDK). Wrapper — Gradle 8.14.2.
@@ -53,6 +53,36 @@ Java 21 (toolchain подберёт JDK). Wrapper — Gradle 8.14.2.
 
 **Детерминизм** — одна конфигурация и один `seed` дают одинаковую event-ленту;
 `advance()` можно вызывать частями.
+
+## API для Spring-бэкенда
+
+Модуль собирается как `java-library` с координатами
+`ru.evraz.koks:koks-simulator`, поэтому Spring-приложение подключает его как
+зависимость, а фреймворки остаются снаружи модели.
+
+| Метод | Назначение |
+|---|---|
+| `config()`, `ovenCount()`, `deltaMin()`, `order()`, `nextIssue()` | метаданные батареи и плана |
+| `state(n)`, `readyAt(n)`, `loadDoneAt(n)`, `dischargeAt(n)` | снимок печи для карточек и мнемосхемы |
+| `machineStatus()`, `machines()` | машины: позиция, занятость, `runningAt(t)` |
+| `forecast(limit)` | ближайшие выдачи: печь, слот, готовность, прогноз начала |
+| `events()` | прошедшие события для журнала |
+| `injectFailure(PUSH_JAM / OVEN_HEATING)` | кнопка «Сгенерировать отказ» |
+| `advance(min)` | шаг модельного времени |
+
+`forecast` возвращает не больше одной выдачи на печь (≤ N): для следующих
+оборотов нужен отдельный прогноз. `Simulator` не потокобезопасен —
+`advance()` и чтение снимков должен сериализовать внешний слой.
+
+Подключение через composite build:
+
+```kotlin
+// backend/settings.gradle.kts
+includeBuild("../simulator")
+
+// backend/build.gradle.kts
+implementation("ru.evraz.koks:koks-simulator")
+```
 
 ## Модель в цифрах (по умолчанию)
 

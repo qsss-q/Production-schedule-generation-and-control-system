@@ -61,4 +61,7 @@ public final class Machine {
     public double freeAt() { return freeAt; }
     public int tasksDone() { return tasksDone; }
     public double busyMin() { return busyMin; }
+
+    /** Занята ли машина в момент nowMin (для статуса running/idle в API). */
+    public boolean busyAt(double nowMin) { return nowMin < freeAt - 1e-9; }
 }

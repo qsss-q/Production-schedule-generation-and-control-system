@@ -55,6 +55,16 @@ public final class Simulator {
 
     private int discharges, lateCount, overholdCount, pushJams, ovenFaults;
 
+    /** Принудительный отказ, запрошенный из UI/API (кнопка «Сгенерировать отказ»). */
+    private boolean forcedPushJam;
+
+    public enum FailureType {
+        /** Тугой ход при ближайшем выталкивании. */
+        PUSH_JAM,
+        /** Отказ обогрева ближайшей по потоку печи. */
+        OVEN_HEATING
+    }
+
     public Simulator(SimConfig cfg) {
         this.cfg = cfg;
         this.order = Seriality.dischargeOrder(cfg.ovenCount(), Seriality.Scheme.parse(cfg.seriality()));
@@ -140,7 +150,12 @@ public final class Simulator {
 
         // Отказ выталкивания: тугой ход, машина занята дольше.
         double pushDur = cfg.pushMin();
-        if (rng.nextDouble() < cfg.pushJamProb()) {
+        boolean jam = rng.nextDouble() < cfg.pushJamProb();
+        if (forcedPushJam) {
+            jam = true;
+            forcedPushJam = false;
+        }
+        if (jam) {
             pushJams++;
             events.add(new Event(m(pushStart), Event.Type.FAULT, p,
                     "отказ выталкивания (тугой ход), простой КВ %.0f мин".formatted(cfg.pushJamRepairMin())));
@@ -252,8 +267,7 @@ public final class Simulator {
 
     /** Состояние печи на текущий момент симуляции. */
     public OvenState state(int ovenNo) {
-        if (ovenNo < 1 || ovenNo > cfg.ovenCount())
-            throw new IllegalArgumentException("печь %d вне диапазона 1..%d".formatted(ovenNo, cfg.ovenCount()));
+        checkOven(ovenNo);
         double t = simMin;
         if (t < heatRecoverAt[ovenNo]) return OvenState.FAULT;
         if (dischargeAt[ovenNo] <= t && t < loadDoneAt[ovenNo]) return OvenState.EMPTY;
@@ -261,9 +275,85 @@ public final class Simulator {
         return (t - readyAt[ovenNo] > cfg.toleranceMin()) ? OvenState.OVERHOLD : OvenState.READY;
     }
 
+    private void checkOven(int ovenNo) {
+        if (ovenNo < 1 || ovenNo > cfg.ovenCount())
+            throw new IllegalArgumentException("печь %d вне диапазона 1..%d".formatted(ovenNo, cfg.ovenCount()));
+    }
+
     public long simMinutes() { return simMin; }
 
-    public List<Event> events() { return List.copyOf(events); }
+    /** Конфигурация, с которой создан симулятор. */
+    public SimConfig config() { return cfg; }
+
+    public int ovenCount() { return cfg.ovenCount(); }
+
+    /** Нормативный шаг выдачи Δt = T_цикл / N, мин. */
+    public double deltaMin() { return deltaMin; }
+
+    /** Индекс следующей выдачи в порядке обхода. */
+    public int nextIssue() { return nextIssue; }
+
+    /** Копия порядка выдачи за оборот (номера печей). */
+    public int[] order() { return order.clone(); }
+
+    /** Момент готовности печи к выдаче, мин симуляции. */
+    public double readyAt(int ovenNo) { checkOven(ovenNo); return readyAt[ovenNo]; }
+
+    /** Момент окончания загрузки камеры, мин симуляции. */
+    public double loadDoneAt(int ovenNo) { checkOven(ovenNo); return loadDoneAt[ovenNo]; }
+
+    /** Факт начала последней выдачи, мин симуляции. */
+    public double dischargeAt(int ovenNo) { checkOven(ovenNo); return dischargeAt[ovenNo]; }
+
+    /**
+     * Прогноз ближайших выдач: печь, плановый слот, готовность и оценка начала.
+     * Для ближайшей выдачи учитывается текущая занятость машин; для следующих —
+     * только слот и готовность печи (без учёта будущих простоев).
+     *
+     * @param limit сколько выдач вернуть, не больше числа печей в обороте
+     */
+    public List<PlannedDischarge> forecast(int limit) {
+        int n = Math.max(0, Math.min(limit, order.length));
+        List<PlannedDischarge> out = new ArrayList<>(n);
+        for (int k = 0; k < n; k++) {
+            int idx = nextIssue + k;
+            int p = order[idx % order.length];
+            double planned = (idx + 1) * deltaMin;
+            double start = (k == 0) ? pushStartFor(p, planned) : Math.max(planned, readyAt[p]);
+            out.add(new PlannedDischarge(p, planned, readyAt[p], start));
+        }
+        return out;
+    }
+
+    /** Позиция прогноза выдачи. Все времена — минуты симуляции. */
+    public record PlannedDischarge(int ovenNo, double plannedMin, double readyAtMin, double predictedStartMin) { }
+
+    /**
+     * Принудительный отказ для кнопки «Сгенерировать отказ» в UI.
+     * PUSH_JAM сработает на ближайшей выдаче, OVEN_HEATING — сразу на ближайшей
+     * по потоку печи.
+     */
+    public void injectFailure(FailureType type) {
+        switch (type) {
+            case PUSH_JAM -> forcedPushJam = true;
+            case OVEN_HEATING -> injectOvenHeatingFault(order[nextIssue % order.length]);
+        }
+    }
+
+    /** Принудительный отказ обогрева конкретной печи в текущий момент симуляции. */
+    public void injectOvenHeatingFault(int ovenNo) {
+        checkOven(ovenNo);
+        applyHeatFault(ovenNo, simMin);
+    }
+
+    public List<Event> events() {
+        // События могут добавляться с упреждением (LOADED — на конец загрузки),
+        // поэтому наружу отдаём хронологический порядок; при равном времени
+        // сохраняется порядок добавления.
+        return events.stream()
+                .sorted(java.util.Comparator.comparingLong(Event::simMin))
+                .toList();
+    }
 
     /** Живые объекты машин комплекта (для расчётов и будущего API). */
     public List<Machine> machines() {
@@ -295,6 +385,9 @@ public final class Simulator {
     /** Срез состояния машины. */
     public record MachineStatus(String name, String code, String where, double pos, double posM,
                                 double freeAt, int tasksDone, double utilization) {
+        /** Занята ли машина в момент nowMin (running/idle в API). */
+        public boolean runningAt(double nowMin) { return freeAt > nowMin + 1e-9; }
+
         @Override
         public String toString() {
             return "%s (%s): %s, %.1f м, свободна с %.1f мин, задач %d, занятость %.0f%%"
