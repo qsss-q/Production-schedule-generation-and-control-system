@@ -1,0 +1,8 @@
+.git
+.idea
+*.iml
+.gradle
+build
+simulator/.gradle
+simulator/build
+HELP.md
