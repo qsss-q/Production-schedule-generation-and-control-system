@@ -1,25 +1,28 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, ResponsiveContainer, ReferenceLine } from 'recharts';
+import { getTemperature } from '../api/client';
+import { fmtTime } from '../utils/format';
+import { LEGEND, legendColor, ovenView } from '../utils/ovenView';
 
-// Единая логика данных для печей
-const getOvenData = (num) => {
-  const isGreen = [1, 10, 15, 31, 51].includes(num);
-  const isYellow = [2, 28, 43, 58].includes(num);
-  const isOrange = [3, 9, 12, 13, 26, 27, 40, 41, 42, 60].includes(num);
-  const isRed = [30].includes(num);
-
-  if (isGreen) return { color: '#10B981', pc: 100, stat: 'Готова к выгрузке', txt: 'text-[#10B981]', border: 'border-[#10B981]' };
-  if (isYellow) return { color: '#EAB308', pc: 58, stat: 'Коксование', txt: 'text-[#A16207]', border: 'border-[#EAB308]' };
-  if (isOrange) return { color: '#F97316', pc: 100, over: true, stat: 'Передержка кокса', txt: 'text-[#C2410C]', border: 'border-[#F97316]' };
-  if (isRed) return { color: '#EF4444', pc: 0, stat: 'Авария', txt: 'text-[#EF4444]', border: 'border-[#EF4444]' };
-  return { color: '#3B82F6', pc: 40, stat: 'Выдача кокса', txt: 'text-[#1D4ED8]', border: 'border-[#3B82F6]' };
+// Положение машины в ряду печей. pos — номер печи (может быть дробным,
+// у башен больше числа печей — тогда показываем у последней печи).
+const machinePos = (machines, type, total) => {
+  const m = machines.find((x) => x.type === type);
+  return m ? Math.min(m.pos, total) : null;
 };
 
-export default function MainWorkspace() {
+export default function MainWorkspace({ ovens = [], machines = [], feed = null }) {
   const [selectedOvens, setSelectedOvens] = useState([]); // 
   const [analytics, setAnalytics] = useState([]);
-  const [pusherPos] = useState(2); 
-  const [wagonPos] = useState(4);  
+
+  const total = ovens.length;
+  const ovenByNum = useMemo(() => Object.fromEntries(ovens.map((o) => [o.number, o])), [ovens]);
+  // батарея рисуется двумя рядами: 69 печей -> 35 + 34
+  const split = Math.ceil(total / 2);
+  const pusherPos = machinePos(machines, 'pusher', total);
+  const wagonPos = machinePos(machines, 'quenchCar', total);
+
+  const counts = ovens.reduce((acc, o) => ({ ...acc, [o.state]: (acc[o.state] ?? 0) + 1 }), {});
 
   // Клик по маленькой печи сверху
   const toggleOven = (num) => {
@@ -40,35 +43,53 @@ export default function MainWorkspace() {
     setAnalytics(prev => prev.includes(num) ? prev.filter(n => n !== num) : [...prev, num]);
   };
 
+  // «Авто: самые проблемные» — до 5 печей: сначала аварии, затем самые долгие передержки
+  const autoSelect = () => {
+    const rank = { fault: 0, overhold: 1 };
+    const problem = ovens
+      .filter((o) => o.state === 'fault' || o.state === 'overhold')
+      .sort((a, b) => rank[a.state] - rank[b.state] || b.deviationMin - a.deviationMin)
+      .slice(0, 5)
+      .map((o) => o.number)
+      .sort((a, b) => a - b);
+    setSelectedOvens(problem);
+    setAnalytics((prev) => prev.filter((n) => problem.includes(n)));
+  };
+
+  const feedItems = (feed?.items ?? []).slice(0, 6);
+
   return (
     <div className="p-6 space-y-6">
       
       {/* 1. Блок: Вся батарея (Маленькие печи) */}
       <div className="bg-white rounded-xl p-2 border border-slate-200 shadow-sm">
         <div className="flex justify-between items-center mb-6">
-          <h3 className="font-bold text-[15px] text-slate-800">Вся батарея · 60 печей</h3>
+          <h3 className="font-bold text-[15px] text-slate-800">Вся батарея · {total} печей</h3>
           <div className="flex gap-4 text-[11px] font-semibold text-slate-600">
-            <span className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 bg-[#3B82F6] rounded-[2px]"></div>В работе: 44</span>
-            <span className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 bg-[#EAB308] rounded-[2px]"></div>Отставание: 12</span>
-            <span className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 bg-[#A16207] rounded-[2px]"></div>Срыв графика: 3</span>
-            <span className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 bg-[#EF4444] rounded-[2px]"></div>Авария: 1</span>
+            {LEGEND.map((item) => (
+              <span key={item.state} className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-[2px]" style={{ backgroundColor: legendColor(item.state) }}></div>{item.label}: {counts[item.state] ?? 0}</span>
+            ))}
           </div>
         </div>
 
-        <div className="space-y-6">
-          <div>
-            <TrackWithMachines start={1} end={30} pusherPos={pusherPos} wagonPos={wagonPos} />
-            <div className="flex justify-between w-full mt-1 px-2">
-              {Array.from({ length: 30 }).map((_, i) => (<MiniOven key={i+1} num={i+1} isSelected={selectedOvens.includes(i+1)} onClick={() => toggleOven(i+1)} />))}
+        {total === 0 ? (
+          <div className="text-center py-10 text-slate-400 text-sm font-medium">Загрузка данных симулятора…</div>
+        ) : (
+          <div className="space-y-6">
+            <div>
+              <TrackWithMachines start={1} end={split} isLast={false} pusherPos={pusherPos} wagonPos={wagonPos} />
+              <div className="flex justify-between w-full mt-1 px-2">
+                {ovens.slice(0, split).map((o) => (<MiniOven key={o.number} oven={o} isSelected={selectedOvens.includes(o.number)} onClick={() => toggleOven(o.number)} />))}
+              </div>
+            </div>
+            <div>
+              <TrackWithMachines start={split + 1} end={total} isLast={true} pusherPos={pusherPos} wagonPos={wagonPos} />
+              <div className="flex justify-between w-full mt-1 px-2">
+                {ovens.slice(split).map((o) => (<MiniOven key={o.number} oven={o} isSelected={selectedOvens.includes(o.number)} onClick={() => toggleOven(o.number)} />))}
+              </div>
             </div>
           </div>
-          <div>
-            <TrackWithMachines start={31} end={60} pusherPos={pusherPos} wagonPos={wagonPos} />
-            <div className="flex justify-between w-full mt-1 px-2">
-              {Array.from({ length: 30 }).map((_, i) => (<MiniOven key={i+31} num={i+31} isSelected={selectedOvens.includes(i+31)} onClick={() => toggleOven(i+31)} />))}
-            </div>
-          </div>
-        </div>
+        )}
       </div>
 
       {/* 2. Блок: Большие карточки выбранных печей */}
@@ -76,17 +97,18 @@ export default function MainWorkspace() {
         <div className="flex justify-between items-center mb-5">
           <h3 className="font-bold text-[15px] text-slate-800">Печи · ход процесса и состояние</h3>
           <div className="flex items-center gap-4 text-[11px]">
-            <span className="text-slate-500 font-medium">включено {selectedOvens.length} из 60</span>
-            <button className="text-blue-600 border border-blue-200 bg-blue-50 hover:bg-blue-100 transition-colors px-3 py-1.5 rounded-md font-bold">Авто: самые проблемные</button>
+            <span className="text-slate-500 font-medium">включено {selectedOvens.length} из {total}</span>
+            <button onClick={autoSelect} className="text-blue-600 border border-blue-200 bg-blue-50 hover:bg-blue-100 transition-colors px-3 py-1.5 rounded-md font-bold">Авто: самые проблемные</button>
           </div>
         </div>
         
         {selectedOvens.length > 0 ? (
           <div className="grid grid-cols-5 gap-4">
-            {selectedOvens.map(num => (
+            {selectedOvens.filter((num) => ovenByNum[num]).map(num => (
               <BigOvenCard 
                 key={num} 
                 num={num} 
+                oven={ovenByNum[num]}
                 onAnalyticsToggle={toggleAnalytics} 
                 isAnalyticsOpen={analytics.includes(num)} 
               />
@@ -106,7 +128,7 @@ export default function MainWorkspace() {
             <h3 className="font-bold text-[15px]">Аналитика печей - сравнение (открыто {analytics.length})</h3>
           </div>
           <div className="grid grid-cols-2 gap-4">
-            {analytics.map(num => <AnalyticsChartCard key={num} num={num} onClose={() => toggleAnalytics(num)} />)}
+            {analytics.filter((num) => ovenByNum[num]).map(num => <AnalyticsChartCard key={num} num={num} oven={ovenByNum[num]} onClose={() => toggleAnalytics(num)} />)}
           </div>
         </div>
       )}
@@ -115,9 +137,18 @@ export default function MainWorkspace() {
       <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm">
         <h3 className="font-bold text-[15px] text-slate-800 mb-5">Лента освещает события</h3>
         <div className="space-y-4">
-          <EventRow time="11:37" dot="bg-[#3B82F6]" text="П-4 · завершение выгрузки" rightText="через 27 мин" />
-          <EventRow time="12:30" dot="bg-[#F97316]" text="П-3 · выдача кокса (ручная)" rightText="+25 мин" highlight />
-          <EventRow time="17:03" dot="bg-[#EAB308]" text="П-2 · выдача кокса" rightText="+6 мин" highlight />
+          {feedItems.length > 0 ? feedItems.map((it) => (
+            <EventRow
+              key={`${it.ovenNumber}-${it.plannedAt}`}
+              time={fmtTime(it.predictedAt)}
+              dot={it.severity === 'warning' ? 'bg-[#F97316]' : 'bg-[#3B82F6]'}
+              text={it.title}
+              rightText={it.deviationMin > 0 ? `+${Math.round(it.deviationMin)} мин` : it.relativeLabel}
+              highlight={it.deviationMin > 0}
+            />
+          )) : (
+            <div className="text-slate-400 text-[13px]">Нет данных от симулятора.</div>
+          )}
         </div>
       </div>
     </div>
@@ -126,19 +157,26 @@ export default function MainWorkspace() {
 
 // === ВСПОМОГАТЕЛЬНЫЕ КОМПОНЕНТЫ ===
 
-const TrackWithMachines = ({ start, end, pusherPos, wagonPos }) => {
-  const showPusher = pusherPos >= start && pusherPos <= end;
-  const showWagon = wagonPos >= start && wagonPos <= end;
+// Машины на дорожке над рядом печей. Ряд занимает печи start..end;
+// у последнего ряда справа машина доезжает до конца (башни за торцом батареи).
+const TrackWithMachines = ({ start, end, isLast, pusherPos, wagonPos }) => {
+  const inRow = (pos) => pos != null && pos >= start - 0.5 && (isLast || pos < end + 0.5);
+  const leftPct = (pos) => {
+    const span = Math.max(1, end - start);
+    return Math.max(0, Math.min(1, (pos - start) / span)) * 100;
+  };
+  const showPusher = inRow(pusherPos);
+  const showWagon = inRow(wagonPos);
   return (
     <div className="relative w-full h-8 border-b-[3px] border-dotted border-slate-300">
       {showPusher && (
-        <div className="absolute top-0 flex flex-col items-center transition-all z-10" style={{ left: `${((pusherPos - start) / 29) * 100}%`, transform: 'translateX(-50%)' }}>
+        <div className="absolute top-0 flex flex-col items-center transition-all z-10" style={{ left: `${leftPct(pusherPos)}%`, transform: 'translateX(-50%)' }}>
           <span className="text-[9px] font-bold bg-white text-[#EF4444] px-1.5 py-0.5 rounded shadow-[0_2px_4px_rgba(0,0,0,0.1)] border border-[#EF4444]">Выталкиватель</span>
           <div className="w-0 h-0 border-l-[5px] border-r-[5px] border-t-[6px] border-x-transparent border-t-[#EF4444] mt-0.5"></div>
         </div>
       )}
       {showWagon && (
-        <div className="absolute top-0 flex flex-col items-center transition-all z-10" style={{ left: `${((wagonPos - start) / 29) * 100}%`, transform: 'translateX(-50%)' }}>
+        <div className="absolute top-0 flex flex-col items-center transition-all z-10" style={{ left: `${leftPct(wagonPos)}%`, transform: 'translateX(-50%)' }}>
           <span className="text-[9px] font-bold bg-white text-[#10B981] px-1.5 py-0.5 rounded shadow-[0_2px_4px_rgba(0,0,0,0.1)] border border-[#10B981]">Тушил. вагон</span>
           <div className="w-0 h-0 border-l-[5px] border-r-[5px] border-t-[6px] border-x-transparent border-t-[#10B981] mt-0.5"></div>
         </div>
@@ -148,8 +186,9 @@ const TrackWithMachines = ({ start, end, pusherPos, wagonPos }) => {
 };
 
 // Исправленная мини-печь: просто строгая темная обводка и увеличение при клике
-const MiniOven = ({ num, isSelected, onClick }) => {
-  const data = getOvenData(num);
+const MiniOven = ({ oven, isSelected, onClick }) => {
+  const num = oven.number;
+  const data = ovenView(oven);
   return (
     <div className="flex flex-col items-center group relative cursor-pointer w-[18px]" onClick={onClick}>
       <div className={`
@@ -167,8 +206,8 @@ const MiniOven = ({ num, isSelected, onClick }) => {
 };
 
 // Обновленная большая карточка под новый дизайн со скриншота
-const BigOvenCard = ({ num, onAnalyticsToggle, isAnalyticsOpen }) => {
-  const t = getOvenData(num);
+const BigOvenCard = ({ num, oven, onAnalyticsToggle, isAnalyticsOpen }) => {
+  const t = ovenView(oven);
   return (
     <div className={`bg-white rounded-xl p-4 border-2 flex flex-col items-center relative transition-all ${isAnalyticsOpen ? 'shadow-md border-blue-200' : t.border}`}>
       <div className="w-full flex justify-between items-start mb-6">
@@ -199,23 +238,43 @@ const BigOvenCard = ({ num, onAnalyticsToggle, isAnalyticsOpen }) => {
         </div>
         <div className="w-[70px] h-[80px] border-2 border-slate-300 rounded-[6px] relative overflow-hidden bg-white flex items-end">
           <div className="w-full transition-all duration-1000" style={{ 
-            height: typeof t.pc === 'string' ? '100%' : `${t.pc}%`, 
+            height: `${t.pc}%`, 
             backgroundColor: t.color, 
             backgroundImage: 'repeating-linear-gradient(90deg, transparent, transparent 5px, rgba(0,0,0,0.15) 5px, rgba(0,0,0,0.15) 7px)' 
           }}></div>
         </div>
       </div>
       
-      <span className={`text-[24px] font-black ${t.txt} leading-none mb-1.5`}>{t.pc}{typeof t.pc === 'number' ? ' %' : ' %'}</span>
+      <span className={`text-[24px] font-black ${t.txt} leading-none mb-1.5`}>{t.pc} %</span>
       <span className="text-[11px] text-slate-500 font-medium mb-1 text-center">{t.stat}</span>
+      {oven.deviationMin > 0 && (
+        <span className="text-[10px] font-bold text-[#F97316]">+{Math.round(oven.deviationMin)} мин</span>
+      )}
     </div>
   );
 };
 
+// Запасные данные, если в БД нет замеров температуры для печи
+const FALLBACK_TEMPERATURE = [ {time: '08:00', val: 990}, {time: '09:00', val: 1000}, {time: '10:00', val: 1010}, {time: '11:00', val: 1008} ];
+
 // Карточка с самим графиком
-const AnalyticsChartCard = ({ num, onClose }) => {
-  const t = getOvenData(num);
-  const data = [ {time: '08:00', val: 990}, {time: '09:00', val: 1000}, {time: '10:00', val: 1010}, {time: '11:00', val: 1008} ];
+const AnalyticsChartCard = ({ num, oven, onClose }) => {
+  const t = ovenView(oven);
+  const [readings, setReadings] = useState(null);
+
+  // температура берётся из БД: GET /api/temperature/by-oven-number/{номер печи}
+  useEffect(() => {
+    let alive = true;
+    getTemperature(num)
+      .then((rows) => alive && setReadings(rows))
+      .catch(() => alive && setReadings([]));
+    return () => { alive = false; };
+  }, [num]);
+
+  const data = readings && readings.length > 0
+    ? readings.map((r) => ({ time: String(r.recordedAt).slice(11, 16), val: r.temperature }))
+    : FALLBACK_TEMPERATURE;
+
   return (
     <div className="bg-white border border-slate-200 rounded p-4 relative shadow-sm">
       <div className="flex justify-between items-center mb-2">

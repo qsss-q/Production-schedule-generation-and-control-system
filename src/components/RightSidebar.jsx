@@ -1,6 +1,62 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { getAudit } from '../api/client';
+import { fmtDbTime, fmtTime } from '../utils/format';
+import {
+  deviationCardType,
+  deviationText,
+  deviationTitle,
+  eventCategory,
+  journalDot,
+  journalText,
+  recentDeviations,
+} from '../utils/eventView';
 
-export default function RightSidebar({ onClose }) {
+// Теги-фильтры журнала: подпись, категория события, цвет
+const TAGS = [
+  { cat: 'accident', label: 'Авария', color: 'bg-red-100 text-red-600' },
+  { cat: 'schedule', label: 'Срыв графика', color: 'bg-yellow-200 text-yellow-800' },
+  { cat: 'deviation', label: 'Отклонение', color: 'bg-yellow-100 text-yellow-700' },
+  { cat: 'info', label: 'Информация', color: 'bg-slate-100 text-slate-600' },
+];
+
+export default function RightSidebar({ onClose, events = [], state = null }) {
+  const [category, setCategory] = useState(null);   // выбранный тег или null
+  const [equip, setEquip] = useState('all');        // 'all' или номер печи
+  const [period, setPeriod] = useState('480');      // минут симуляции или 'all'
+  const [actions, setActions] = useState([]);       // журнал действий оператора (БД)
+
+  const nowMin = state?.simMinutes ?? 0;
+
+  // Действия оператора: GET /api/audit (обновляем, пока панель открыта)
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      getAudit()
+        .then((rows) => alive && setActions([...rows].sort((a, b) => b.id - a.id).slice(0, 8)))
+        .catch(() => {});
+    load();
+    const timer = setInterval(load, 3000);
+    return () => { alive = false; clearInterval(timer); };
+  }, []);
+
+  // «Отклонения»: события, требующие внимания, за последний час симуляции
+  const deviations = recentDeviations(events, nowMin).slice(0, 6);
+
+  // печи, по которым были события (для выпадающего списка)
+  const ovenOptions = useMemo(
+    () => [...new Set(events.map((e) => e.ovenNumber))].sort((a, b) => a - b),
+    [events]
+  );
+
+  const filtered = events.filter(
+    (e) =>
+      (!category || eventCategory(e) === category) &&
+      (equip === 'all' || e.ovenNumber === Number(equip)) &&
+      (period === 'all' || e.simMinutes >= nowMin - Number(period))
+  );
+
+  const reset = () => { setCategory(null); setEquip('all'); setPeriod('480'); };
+
   return (
     <div className="w-[360px] min-w-[300px] max-w-[500px] bg-[#F8FAFC] border-l border-slate-200 h-full flex flex-col flex-shrink-0 z-20 shadow-[-4px_0_15px_-3px_rgba(0,0,0,0.05)] overflow-y-auto">
       
@@ -16,13 +72,14 @@ export default function RightSidebar({ onClose }) {
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
           <div className="flex justify-between items-center mb-3">
             <h3 className="font-bold text-[13px] text-slate-800">Отклонения</h3>
-            <span className="bg-slate-100 text-slate-500 text-[10px] px-2 py-0.5 rounded-full font-semibold">4 новых</span>
+            <span className="bg-slate-100 text-slate-500 text-[10px] px-2 py-0.5 rounded-full font-semibold">{deviations.length} новых</span>
           </div>
           <div className="space-y-2">
-            <DeviationCard type="error" title="Авария · Выталкиватель" desc="Блокировка привода: выдача П-5 невозможна" />
-            <DeviationCard type="warning" title="Срыв графика · П-3" desc="Передержка кокса +25 мин" />
-            <DeviationCard type="alert" title="Отклонение · П-2" desc="Прогноз +6 мин к плану" />
-            <DeviationCard type="info" title="Информация · Тушильный вагон №1" desc="Переход на резервный путь №2" />
+            {deviations.length > 0 ? deviations.map((e, i) => (
+              <DeviationCard key={`${e.simMinutes}-${e.type}-${e.ovenNumber}-${i}`} type={deviationCardType[eventCategory(e)]} title={deviationTitle(e)} desc={deviationText(e)} />
+            )) : (
+              <div className="text-[11px] text-slate-400">За последний час отклонений нет.</div>
+            )}
           </div>
         </div>
 
@@ -30,55 +87,53 @@ export default function RightSidebar({ onClose }) {
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
           <div className="flex justify-between items-center mb-3">
             <h3 className="font-bold text-[13px] text-slate-800">Журнал событий</h3>
-            <span className="text-slate-400 text-[10px]">найдено: 8</span>
+            <span className="text-slate-400 text-[10px]">найдено: {filtered.length}</span>
           </div>
           <div className="flex gap-2 mb-3">
             <div className="flex-1">
               <label className="text-[10px] text-slate-400 mb-1 block">Оборудование</label>
-              <select className="w-full border border-slate-200 rounded p-1.5 text-[11px] text-slate-700 bg-slate-50 cursor-pointer focus:outline-none focus:border-blue-400 hover:border-slate-300"><option>Всё оборудование</option></select>
+              <select value={equip} onChange={(e) => setEquip(e.target.value)} className="w-full border border-slate-200 rounded p-1.5 text-[11px] text-slate-700 bg-slate-50 cursor-pointer focus:outline-none focus:border-blue-400 hover:border-slate-300">
+                <option value="all">Всё оборудование</option>
+                {ovenOptions.map((n) => <option key={n} value={n}>Печь П-{n}</option>)}
+              </select>
             </div>
             <div className="w-[100px]">
               <label className="text-[10px] text-slate-400 mb-1 block">Период</label>
-              <select className="w-full border border-slate-200 rounded p-1.5 text-[11px] text-slate-700 bg-slate-50 cursor-pointer focus:outline-none focus:border-blue-400 hover:border-slate-300"><option>Смена (8 ч)</option></select>
+              <select value={period} onChange={(e) => setPeriod(e.target.value)} className="w-full border border-slate-200 rounded p-1.5 text-[11px] text-slate-700 bg-slate-50 cursor-pointer focus:outline-none focus:border-blue-400 hover:border-slate-300">
+                <option value="480">Смена (8 ч)</option>
+                <option value="240">4 ч</option>
+                <option value="all">Всё время</option>
+              </select>
             </div>
           </div>
           
           <div className="flex flex-wrap gap-1.5 mb-3">
-            <Tag color="bg-red-100 text-red-600">Авария</Tag>
-            <Tag color="bg-yellow-200 text-yellow-800">Срыв графика</Tag>
-            <Tag color="bg-yellow-100 text-yellow-700">Отклонение</Tag>
-            <Tag color="bg-slate-100 text-slate-600">Информация</Tag>
+            {TAGS.map((t) => (
+              <Tag key={t.cat} color={t.color} active={category === t.cat} onClick={() => setCategory(category === t.cat ? null : t.cat)}>{t.label}</Tag>
+            ))}
           </div>
           <div className="flex gap-2 text-[10px] font-semibold text-blue-600 mb-4 border-b border-slate-100 pb-2">
-            <button className="hover:text-blue-800">Аварии выбранной печи</button>
-            <button className="hover:text-blue-800">Срывы всех печей · 4 ч</button>
-            <button className="hover:text-blue-800 ml-auto">Сбросить</button>
+            <button onClick={() => setCategory('accident')} className="hover:text-blue-800">Аварии выбранной печи</button>
+            <button onClick={() => { setCategory('schedule'); setEquip('all'); setPeriod('240'); }} className="hover:text-blue-800">Срывы всех печей · 4 ч</button>
+            <button onClick={reset} className="hover:text-blue-800 ml-auto">Сбросить</button>
           </div>
 
           <div className="space-y-3 relative before:absolute before:inset-0 before:ml-[5px] before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-slate-100">
-            <TimelineItem time="11:05" color="bg-[#10B981]" text="Печь П-1: коксование завершено" />
-            <TimelineItem time="10:58" color="bg-[#EAB308]" text="Печь П-3: передержка кокса +25 мин" />
-            <TimelineItem time="10:52" color="bg-[#3B82F6]" text="Печь П-4: начало выгрузки" />
-            <TimelineItem time="10:50" color="bg-slate-500" text="Тушильный вагон №1 → путь №2" />
-            <TimelineItem time="10:35" color="bg-[#10B981]" text="Разгрузка печи П-2 завершена" />
-            <TimelineItem time="10:20" color="bg-[#EF4444]" text="Выталкиватель: блокировка привода" />
-            <TimelineItem time="09:30" color="bg-slate-500" text="Вагоны готовы к разгрузке" />
-            <TimelineItem time="09:10" color="bg-[#3B82F6]" text="Печь П-5: загрузка шихты завершена" />
+            {filtered.slice(0, 12).map((e, i) => (
+              <TimelineItem key={`${e.simMinutes}-${e.type}-${e.ovenNumber}-${i}`} time={fmtTime(e.simTime)} color={journalDot(e)} text={journalText(e)} />
+            ))}
+            {filtered.length === 0 && <div className="text-[11px] text-slate-400 relative z-10 bg-white">Событий по выбранным фильтрам нет.</div>}
           </div>
         </div>
 
-        {/* Секция Действия оператора */}
+        {/* Секция Действия оператора (журнал из БД) */}
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
           <h3 className="font-bold text-[13px] text-slate-800 mb-4">Действия оператора</h3>
           <div className="space-y-3">
-            <OpAction time="11:05" text="Выгрузка П-3 → 12:30 (вручную)" />
-            <OpAction time="10:42" text="П-5: доступность → доступна" />
-            <OpAction time="10:15" text="Шаг между выдачами: 20 → 15 мин" />
-            <OpAction time="10:00" text="Алгоритм → Вариант 2 (простои)" />
-            <OpAction time="09:20" text="Приоритет срочных заказов: вкл." />
-            <OpAction time="08:05" text="Загружены исходные данные" />
-            <OpAction time="08:00" text="Запуск симулятора (1 с = 1 мин)" />
-            <OpAction time="07:55" text="Открыт справочник оборудования" />
+            {actions.map((a) => (
+              <OpAction key={a.id} time={fmtDbTime(a.createdAt)} text={a.details} />
+            ))}
+            {actions.length === 0 && <div className="text-[11px] text-slate-400">Пока нет действий оператора.</div>}
           </div>
         </div>
       </div>
@@ -101,7 +156,7 @@ const DeviationCard = ({ type, title, desc }) => {
     </div>
   );
 };
-const Tag = ({ children, color }) => <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold cursor-pointer hover:opacity-80 transition-opacity ${color}`}>{children}</span>;
+const Tag = ({ children, color, active, onClick }) => <span onClick={onClick} className={`text-[9px] px-2 py-0.5 rounded-full font-bold cursor-pointer hover:opacity-80 transition-opacity ${color} ${active ? 'ring-2 ring-offset-1 ring-slate-400' : ''}`}>{children}</span>;
 const TimelineItem = ({ time, color, text }) => (
   <div className="flex items-center gap-3 relative z-10 group cursor-pointer">
     <div className={`w-2.5 h-2.5 rounded-full border-2 border-white shadow-sm group-hover:scale-125 transition-transform ${color}`}></div>
