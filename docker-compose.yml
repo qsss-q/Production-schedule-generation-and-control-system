@@ -1,3 +1,6 @@
+# Вся система одной командой:  docker compose up --build
+#   фронт   -> http://localhost:5173
+#   Swagger -> http://localhost:8080/swagger-ui.html
 services:
   coke-postgres-db:
     image: postgres:15-alpine
@@ -30,6 +33,20 @@ services:
       - SPRING_DATASOURCE_URL=jdbc:postgresql://coke-postgres-db:5432/coke_factory_db
       - SPRING_DATASOURCE_USERNAME=dev_operator
       - SPRING_DATASOURCE_PASSWORD=secret
+
+  coke-front:
+    build:
+      # Фронт собирается прямо из ветки репозитория на GitHub, отдельно клонировать его не нужно.
+      # После слияния pull request замените front-api-integration на front.
+      context: https://github.com/qsss-q/Production-schedule-generation-and-control-system.git#front-api-integration
+      # Если фронт лежит рядом (папка front), можно собрать из неё:
+      # context: ../front
+    container_name: coke_factory_front
+    ports:
+      - "5173:80"
+    depends_on:
+      - coke-app
+    restart: on-failure
 
 volumes:
   postgres_data:
