@@ -157,34 +157,51 @@ export default function MainWorkspace({ ovens = [], machines = [], feed = null }
 
 // === ВСПОМОГАТЕЛЬНЫЕ КОМПОНЕНТЫ ===
 
+
 // Машины на дорожке над рядом печей. Ряд занимает печи start..end;
 // у последнего ряда справа машина доезжает до конца (башни за торцом батареи).
 const TrackWithMachines = ({ start, end, isLast, pusherPos, wagonPos }) => {
-  const inRow = (pos) => pos != null && pos >= start - 0.5 && (isLast || pos < end + 0.5);
-  const leftPct = (pos) => {
+  // Расширяем зону видимости: вагон живет в DOM, даже если он на 1 печь за пределами ряда
+  const inRow = (pos) => pos != null && pos >= start - 1 && pos <= end + 1;
+  
+  const getStyle = (pos) => {
+    if (pos == null) return { opacity: 0, left: '0%' };
+    
     const span = Math.max(1, end - start);
-    return Math.max(0, Math.min(1, (pos - start) / span)) * 100;
+    // Убрали жесткие лимиты Math.min/max. 
+    // Теперь left честно просчитывается в минус (выезжает) или больше 100% (уезжает)
+    const left = ((pos - start) / span) * 100;
+    
+    return {
+      left: `${left}%`,
+      transform: 'translateX(-50%)',
+      opacity: inRow(pos) ? 1 : 0,
+      pointerEvents: inRow(pos) ? 'auto' : 'none'
+    };
   };
-  const showPusher = inRow(pusherPos);
-  const showWagon = inRow(wagonPos);
+
   return (
-    <div className="relative w-full h-8 border-b-[3px] border-dotted border-slate-300">
-      {showPusher && (
-        <div className="absolute top-0 flex flex-col items-center transition-all z-10" style={{ left: `${leftPct(pusherPos)}%`, transform: 'translateX(-50%)' }}>
-          <span className="text-[9px] font-bold bg-white text-[#EF4444] px-1.5 py-0.5 rounded shadow-[0_2px_4px_rgba(0,0,0,0.1)] border border-[#EF4444]">Выталкиватель</span>
-          <div className="w-0 h-0 border-l-[5px] border-r-[5px] border-t-[6px] border-x-transparent border-t-[#EF4444] mt-0.5"></div>
-        </div>
-      )}
-      {showWagon && (
-        <div className="absolute top-0 flex flex-col items-center transition-all z-10" style={{ left: `${leftPct(wagonPos)}%`, transform: 'translateX(-50%)' }}>
-          <span className="text-[9px] font-bold bg-white text-[#10B981] px-1.5 py-0.5 rounded shadow-[0_2px_4px_rgba(0,0,0,0.1)] border border-[#10B981]">Тушил. вагон</span>
-          <div className="w-0 h-0 border-l-[5px] border-r-[5px] border-t-[6px] border-x-transparent border-t-[#10B981] mt-0.5"></div>
-        </div>
-      )}
+    // Добавлено overflow-hidden: края дорожки теперь обрезают вагоны, создавая эффект туннеля
+    <div className="relative w-full h-8 border-b-[3px] border-dotted border-slate-300 overflow-hidden">
+      <div 
+        // Убрали медленную анимацию, поставили duration-300: вагон больше не дергается и не отстает от бэкенда
+        className="absolute top-0 flex flex-col items-center transition-all duration-300 ease-linear z-10" 
+        style={getStyle(pusherPos)}
+      >
+        <span className="text-[9px] font-bold bg-white text-[#EF4444] px-1.5 py-0.5 rounded shadow-[0_2px_4px_rgba(0,0,0,0.1)] border border-[#EF4444]">Выталкиватель</span>
+        <div className="w-0 h-0 border-l-[5px] border-r-[5px] border-t-[6px] border-x-transparent border-t-[#EF4444] mt-0.5"></div>
+      </div>
+
+      <div 
+        className="absolute top-0 flex flex-col items-center transition-all duration-300 ease-linear z-20" 
+        style={getStyle(wagonPos)}
+      >
+        <span className="text-[9px] font-bold bg-white text-[#10B981] px-1.5 py-0.5 rounded shadow-[0_2px_4px_rgba(0,0,0,0.1)] border border-[#10B981]">Тушил. вагон</span>
+        <div className="w-0 h-0 border-l-[5px] border-r-[5px] border-t-[6px] border-x-transparent border-t-[#10B981] mt-0.5"></div>
+      </div>
     </div>
   );
 };
-
 // Исправленная мини-печь: просто строгая темная обводка и увеличение при клике
 const MiniOven = ({ oven, isSelected, onClick }) => {
   const num = oven.number;
