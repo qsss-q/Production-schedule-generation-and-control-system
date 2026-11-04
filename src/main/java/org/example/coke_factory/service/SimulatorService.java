@@ -3,6 +3,7 @@ package org.example.coke_factory.service;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import ru.evraz.koks.sim.Event;
+import ru.evraz.koks.sim.MachineKind;
 import ru.evraz.koks.sim.OvenState;
 import ru.evraz.koks.sim.SimConfig;
 import ru.evraz.koks.sim.Simulator;
@@ -99,16 +100,45 @@ public class SimulatorService {
 
     public synchronized List<MachineDto> machines() {
         long now = sim.simMinutes();
-        return sim.machineStatus().stream().map(m -> {
-            boolean atBattery = m.pos() <= sim.ovenCount() + 1e-9;
-            Integer oven = atBattery ? (int) Math.round(m.pos()) : null;
+        List<Simulator.MachineStatus> all = sim.machineStatus();
+        double pusherPos = all.stream()
+                .filter(m -> "КВ".equals(m.code()))
+                .mapToDouble(Simulator.MachineStatus::pos)
+                .findFirst().orElse(1);
+
+        return all.stream().map(m -> {
+            // pos в симуляторе — позиция в КОНЦЕ последней задачи машины. У тушильного вагона
+            // это всегда башня, поэтому для экрана считаем, где он находится прямо сейчас.
+            double pos = "ТВ".equals(m.code()) ? quenchCarPositionNow(m, pusherPos, now) : m.pos();
+            boolean atBattery = pos <= sim.ovenCount() + 1e-9;
+            Integer oven = atBattery ? (int) Math.round(pos) : null;
             Integer x = oven == null ? null
                     : Math.max(0, Math.min(sim.ovenCount() - 1, oven - 1));
             return new MachineDto(m.code(), machineType(m.code()), m.name(),
-                    m.runningAt(now) ? "running" : "idle", round2(m.pos()),
+                    m.runningAt(now) ? "running" : "idle", round2(pos),
                     oven, x, location(m.code(), atBattery), iso(m.freeAt()),
                     (int) Math.round(m.utilization() * 100));
         }).toList();
+    }
+
+    /**
+     * Где тушильный вагон сейчас. Поездка вагона: стоит у печи и принимает кокс (takeMin),
+     * едет к башне, разгружается у башни (unloadMin). Свободный вагон стоит у башни.
+     */
+    private double quenchCarPositionNow(Simulator.MachineStatus wagon, double ovenPos, long now) {
+        double tower = sim.towerPos();
+        if (!wagon.runningAt(now)) return tower;
+
+        double remaining = wagon.freeAt() - now;
+        double unload = config.unloadMin();
+        double travel = MachineKind.QUENCH_CAR.travelMin(ovenPos, tower, config.pitchM());
+
+        if (remaining <= unload) return tower;               // разгружается у башни
+        if (remaining <= unload + travel) {                  // едет от печи к башне
+            double left = (remaining - unload) / travel;     // 1 = только выехал, 0 = приехал
+            return tower - (tower - ovenPos) * left;
+        }
+        return ovenPos;                                      // принимает кокс у печи
     }
 
     public synchronized FeedDto feed(int limit) {
