@@ -36,11 +36,8 @@ services:
 
   coke-front:
     build:
-      # Фронт собирается прямо из ветки репозитория на GitHub, отдельно клонировать его не нужно.
-      # После слияния pull request замените front-api-integration на front.
-      context: https://github.com/qsss-q/Production-schedule-generation-and-control-system.git#front-api-integration
-      # Если фронт лежит рядом (папка front), можно собрать из неё:
-      # context: ../front
+      # Фронт лежит в этом же репозитории, в папке frontend/.
+      context: ./frontend
     container_name: coke_factory_front
     ports:
       - "5173:80"

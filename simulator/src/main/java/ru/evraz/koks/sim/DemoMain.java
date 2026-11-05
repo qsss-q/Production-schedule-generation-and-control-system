@@ -19,7 +19,7 @@ public final class DemoMain {
         System.out.printf(
                 "Симулятор v0.1: батарея %d печей, серийность %s (S=%d серий, K=%d),%n" +
                 "T_цикл %.0f мин, T_кокс %.0f мин, Δt выдачи %.1f мин, шаг %.2f м, seed %d%n%n",
-                cfg.ovenCount(), scheme, scheme.series(), scheme.intervalSteps(),
+                cfg.ovenCount(), scheme, scheme.series(), scheme.seriesStep(),
                 cfg.cycleMin(), cfg.cokingMin(), cfg.cycleMin() / cfg.ovenCount(),
                 cfg.pitchM(), cfg.seed());
 

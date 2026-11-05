@@ -46,10 +46,12 @@ class SimulatorTest {
                 .filter(e -> e.type() == Event.Type.DISCHARGE)
                 .map(Event::ovenNo)
                 .toList();
-        // Выдачи следуют порядку серийности: серия 1 — 1, 10, 19, …, 64 (шаг 9)
+        // Выдачи следуют порядку серийности: серия 1 — 1, 10, 19, …, 64 (шаг 9),
+        // затем серия 3, а не серия 2.
         assertEquals(1, ovenOrder.get(0));
         assertEquals(10, ovenOrder.get(1));
         assertEquals(64, ovenOrder.get(7));
+        assertEquals(3, ovenOrder.get(8));
     }
 
     @Test
