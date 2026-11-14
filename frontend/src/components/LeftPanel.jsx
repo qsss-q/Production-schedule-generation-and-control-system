@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   generateSchedule,
   getActiveSettings,
@@ -116,8 +116,9 @@ export default function LeftPanel() {
         
         <div className="mb-5">
           <label className="block text-[11px] text-slate-500 mb-1.5 font-medium">Выбор алгоритма</label>
-          <select className="w-full border border-slate-300 rounded-md p-2 text-[13px] bg-white focus:outline-none focus:border-blue-500 text-slate-700 cursor-pointer hover:border-slate-400 transition-colors">
-            <option>Вариант 2 · Оптимизация простоев</option>
+          <select disabled title="Оптимизационные варианты B2/B3 пока не реализованы"
+            className="w-full border border-slate-300 rounded-md p-2 text-[13px] bg-slate-50 text-slate-600 cursor-not-allowed">
+            <option>Базовый сценарий · серийность 9-2</option>
           </select>
         </div>
 
@@ -138,11 +139,11 @@ export default function LeftPanel() {
                 <div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform duration-300 shadow-sm ${highPriority ? 'translate-x-6' : 'translate-x-1'}`}></div>
               </div>
               <span className="text-[13px] font-medium text-slate-700 flex items-center gap-1 cursor-pointer" onClick={() => setHighPriority(!highPriority)}>
-                Высокий <span className="text-[10px] text-slate-400">▼</span>
+                {highPriority ? 'Высокий' : 'Низкий'} <span className="text-[10px] text-slate-400">▼</span>
               </span>
             </div>
           </div>
-          <span className="text-[11px] text-slate-400 self-end mb-0.5">заказы №17, №21</span>
+          <span className="text-[10px] text-slate-400 self-end mb-0.5">Для будущего планировщика</span>
         </div>
 
         <div className="mb-6 space-y-3">
@@ -171,8 +172,8 @@ export default function LeftPanel() {
           <button onClick={handleGenerate} disabled={busy} className="w-full bg-[#2563EB] text-white rounded-md p-2.5 text-[13px] font-semibold shadow-sm hover:bg-blue-700 active:bg-blue-800 transition-colors disabled:opacity-60">{busy ? 'Формирую…' : 'Сформировать график'}</button>
           {message && <div className="text-[11px] text-slate-500">{message}</div>}
           <div className="flex gap-2.5">
-            <button className="flex-1 border border-slate-300 bg-white rounded-md p-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50 active:bg-slate-100 transition-colors shadow-sm">Загрузить данные</button>
-            <button className="flex-1 border border-slate-300 bg-white rounded-md p-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50 active:bg-slate-100 transition-colors shadow-sm">Справочник</button>
+            <button disabled title="Импорт пока не подключён" className="flex-1 border border-slate-200 bg-slate-50 rounded-md p-2 text-[13px] font-semibold text-slate-400 cursor-not-allowed">Загрузить данные</button>
+            <button disabled title="Отдельное окно справочника пока не реализовано" className="flex-1 border border-slate-200 bg-slate-50 rounded-md p-2 text-[13px] font-semibold text-slate-400 cursor-not-allowed">Справочник</button>
           </div>
         </div>
       </div>
@@ -180,7 +181,8 @@ export default function LeftPanel() {
       <div className="bg-slate-50/80 p-5 border-t border-slate-200">
         <div className="flex justify-between items-center mb-3">
           <h3 className="font-bold text-[13px] text-slate-800">Справочник оборудования</h3>
-          <button className="text-blue-600 text-[11px] border border-blue-200 px-2.5 py-0.5 rounded-md bg-white hover:bg-blue-50 transition-colors font-medium">+ Новый</button>
+          <button disabled title="Создание оборудования через интерфейс пока не реализовано"
+            className="text-slate-400 text-[11px] border border-slate-200 px-2.5 py-0.5 rounded-md bg-slate-50 cursor-not-allowed font-medium">+ Новый</button>
         </div>
         <table className="w-full text-[11px] text-left">
           <thead className="text-slate-400 border-b border-slate-200">

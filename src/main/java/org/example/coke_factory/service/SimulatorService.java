@@ -73,8 +73,18 @@ public class SimulatorService {
                 new Counters(sim.discharges(), sim.lateCount(), sim.overholdCount(),
                         sim.pushJams(), sim.ovenFaults()),
                 sim.order()[sim.nextIssue() % sim.ovenCount()],
-                sim.discharges() == 0 ? null : round1(sim.avgIntervalMin()),
+                sim.discharges() < 2 ? null : round1(sim.avgIntervalMin()),
                 config.pushJamProb(), config.ovenFaultPerHour(), config.seed());
+    }
+
+    /**
+     * Атомарный снимок оператора: время, печи и события относятся к одной
+     * модельной минуте. Отдельные параллельные HTTP-запросы могли получить
+     * разные поколения печей на границе выгрузки и загрузки.
+     */
+    public synchronized SnapshotDto snapshot() {
+        return new SnapshotDto(state(), battery(), ovens(), machines(),
+                feed(20), events(200), analytics(20));
     }
 
     public synchronized List<OvenDto> ovens() {
@@ -93,7 +103,7 @@ public class SimulatorService {
             double deviation = st == OvenState.OVERHOLD
                     ? Math.max(0, sim.simMinutes() - sim.readyAt(n)) : 0;
             out.add(new OvenDto(n, apiState(st), st.label, round1(progress),
-                    round1(deviation), iso(sim.readyAt(n)), ovenSeverity(st)));
+                    round1(deviation), iso(sim.readyAt(n)), iso(sim.loadDoneAt(n)), ovenSeverity(st)));
         }
         return out;
     }
@@ -101,15 +111,10 @@ public class SimulatorService {
     public synchronized List<MachineDto> machines() {
         long now = sim.simMinutes();
         List<Simulator.MachineStatus> all = sim.machineStatus();
-        double pusherPos = all.stream()
-                .filter(m -> "КВ".equals(m.code()))
-                .mapToDouble(Simulator.MachineStatus::pos)
-                .findFirst().orElse(1);
-
         return all.stream().map(m -> {
             // pos в симуляторе — позиция в КОНЦЕ последней задачи машины. У тушильного вагона
             // это всегда башня, поэтому для экрана считаем, где он находится прямо сейчас.
-            double pos = "ТВ".equals(m.code()) ? quenchCarPositionNow(m, pusherPos, now) : m.pos();
+            double pos = "ТВ".equals(m.code()) ? quenchCarPositionNow(m, now) : m.pos();
             boolean atBattery = pos <= sim.ovenCount() + 1e-9;
             Integer oven = atBattery ? (int) Math.round(pos) : null;
             Integer x = oven == null ? null
@@ -125,20 +130,53 @@ public class SimulatorService {
      * Где тушильный вагон сейчас. Поездка вагона: стоит у печи и принимает кокс (takeMin),
      * едет к башне, разгружается у башни (unloadMin). Свободный вагон стоит у башни.
      */
-    private double quenchCarPositionNow(Simulator.MachineStatus wagon, double ovenPos, long now) {
+    private double quenchCarPositionNow(Simulator.MachineStatus wagon, long now) {
         double tower = sim.towerPos();
-        if (!wagon.runningAt(now)) return tower;
+        if (!wagon.runningAt(now) || sim.lastDischargeOven() == 0) return tower;
 
+        // Цель последней выдачи неизменна, даже когда выталкиватель получил следующую работу.
+        double ovenPos = sim.lastDischargeOven();
         double remaining = wagon.freeAt() - now;
         double unload = config.unloadMin();
         double travel = MachineKind.QUENCH_CAR.travelMin(ovenPos, tower, config.pitchM());
 
-        if (remaining <= unload) return tower;               // разгружается у башни
-        if (remaining <= unload + travel) {                  // едет от печи к башне
-            double left = (remaining - unload) / travel;     // 1 = только выехал, 0 = приехал
-            return tower - (tower - ovenPos) * left;
+        if (travel <= 0 || remaining <= unload) return tower;
+        if (remaining <= unload + travel) {
+            double fraction = (remaining - unload) / travel;
+            return tower - (tower - ovenPos) * fraction;
         }
-        return ovenPos;                                      // принимает кокс у печи
+        return ovenPos;
+    }
+
+    /** Доказуемые показатели: только совершившиеся выдачи и накопленная загрузка машин. */
+    public synchronized AnalyticsDto analytics(int limit) {
+        List<Simulator.DischargeRecord> history = sim.dischargeHistory();
+        int total = history.size();
+        long delayed = history.stream()
+                .filter(r -> r.actualMin() - r.plannedMin() > config.toleranceMin())
+                .count();
+        double sumDelay = history.stream()
+                .mapToDouble(r -> Math.max(0, r.actualMin() - r.plannedMin())).sum();
+        double maxDelay = history.stream()
+                .mapToDouble(r -> Math.max(0, r.actualMin() - r.plannedMin()))
+                .max().orElse(0);
+        int first = Math.max(0, total - Math.max(0, Math.min(limit, 200)));
+        List<OperationActualDto> recent = history.subList(first, total).stream()
+                .map(r -> {
+                    double delay = Math.max(0, r.actualMin() - r.plannedMin());
+                    return new OperationActualDto(r.ovenNo(), iso(r.plannedMin()),
+                            iso(r.actualMin()), round1(delay),
+                            delay <= config.toleranceMin());
+                }).toList();
+        List<MachineUtilizationDto> utilization = sim.machineStatus().stream()
+                .map(m -> new MachineUtilizationDto(machineType(m.code()), m.name(),
+                        (int) Math.round(m.utilization() * 100), m.tasksDone()))
+                .toList();
+        return new AnalyticsDto(iso(sim.simMinutes()), total, total - (int) delayed,
+                (int) delayed, total == 0 ? null : round1(100.0 * (total - delayed) / total),
+                total == 0 ? null : round1(sumDelay / total), round1(maxDelay),
+                total < 2 ? null : round1(sim.avgIntervalMin()), round2(sim.deltaMin()),
+                recent, utilization);
     }
 
     public synchronized FeedDto feed(int limit) {
@@ -236,6 +274,24 @@ public class SimulatorService {
     // DTO (ровно по контракту docs/08)
     // ------------------------------------------------------------------
 
+    public record SnapshotDto(StateDto state, BatteryDto battery,
+                              List<OvenDto> ovens, List<MachineDto> machines,
+                              FeedDto feed, List<EventDto> events,
+                              AnalyticsDto analytics) { }
+
+    public record OperationActualDto(int ovenNumber, String plannedAt,
+                                     String actualAt, double delayMin, boolean onTime) { }
+
+    public record MachineUtilizationDto(String type, String name,
+                                        int utilizationPct, int tasksDone) { }
+
+    public record AnalyticsDto(String generatedAt, int totalOperations,
+                               int onTimeOperations, int delayedOperations,
+                               Double onTimePct, Double avgDelayMin, double maxDelayMin,
+                               Double avgIntervalMin, double normIntervalMin,
+                               List<OperationActualDto> recentOperations,
+                               List<MachineUtilizationDto> machineUtilization) { }
+
     public record BatteryDto(String code, String name, int ovenCount,
                              String serialityScheme, double cycleMin, double cokingMin,
                              double deltaMin, double toleranceMin, String shiftStartLocal) {
@@ -252,7 +308,7 @@ public class SimulatorService {
     }
 
     public record OvenDto(int number, String state, String label, double progressPct,
-                          double deviationMin, String readyAt, String severity) {
+                          double deviationMin, String readyAt, String cokingStartedAt, String severity) {
     }
 
     public record MachineDto(String code, String type, String name, String status,

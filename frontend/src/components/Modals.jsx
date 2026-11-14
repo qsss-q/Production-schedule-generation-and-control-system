@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { configure, control, forceFailure } from '../api/client';
 
 // Общая обертка для затемнения фона
@@ -8,68 +8,31 @@ const ModalOverlay = ({ children, onClose }) => (
   </div>
 );
 
-export const AlgorithmModal = ({ onClose }) => {
-  return (
-    <ModalOverlay onClose={onClose}>
-      <div className="bg-white rounded-2xl shadow-xl w-[550px] relative overflow-hidden">
-        {/* Кнопка закрытия круглая */}
-        <button onClick={onClose} className="absolute right-3 top-3 w-7 h-7 bg-white border border-slate-200 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-50 transition-colors z-20 shadow-sm">✕</button>
-        
-        <div className="p-7">
-          <div className="flex justify-between items-center mb-6 pr-8">
-            <h2 className="text-[17px] font-bold text-slate-800">Сравнение алгоритмов</h2>
-            <button className="bg-[#2563EB] text-white px-4 py-1.5 rounded-lg text-[12px] font-semibold shadow-sm hover:bg-blue-700 transition-colors">
-              Применить B2
-            </button>
-          </div>
-
-          <div className="relative mt-2">
-            {/* Трюк для 100% совпадения: Абсолютная синяя рамка для колонки B2 */}
-            <div className="absolute top-0 bottom-0 left-[48%] w-[26%] border-2 border-[#2563EB] bg-[#EFF6FF] rounded-lg -z-0 pointer-events-none shadow-[0_0_10px_rgba(37,99,235,0.1)]"></div>
-            
-            {/* Сама таблица поверх рамки */}
-            <table className="w-full text-[13px] relative z-10 border-collapse">
-              <thead>
-                <tr className="text-slate-500 text-left border-b border-slate-100">
-                  <th className="py-3 px-2 font-medium w-[28%]">Критерий</th>
-                  <th className="py-3 px-2 font-medium w-[20%] text-center">B1 FIFO</th>
-                  <th className="py-3 px-2 font-bold text-[#2563EB] w-[26%] text-center">B2 Простои</th>
-                  <th className="py-3 px-2 font-medium w-[26%] text-center">B3 Срочные</th>
-                </tr>
-              </thead>
-              <tbody className="text-slate-800 font-medium">
-                <tr className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
-                  <td className="py-3.5 px-2 text-slate-600">Просрочено операций</td>
-                  <td className="py-3.5 px-2 text-center">3</td>
-                  <td className="py-3.5 px-2 text-center text-[#10B981] flex items-center justify-center gap-1">1 <span className="text-[10px]">✓</span></td>
-                  <td className="py-3.5 px-2 text-center">2</td>
-                </tr>
-                <tr className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
-                  <td className="py-3.5 px-2 text-slate-600">Равномерность, σ %</td>
-                  <td className="py-3.5 px-2 text-center">18</td>
-                  <td className="py-3.5 px-2 text-center text-[#10B981] flex items-center justify-center gap-1">7 <span className="text-[10px]">✓</span></td>
-                  <td className="py-3.5 px-2 text-center">11</td>
-                </tr>
-                <tr className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
-                  <td className="py-3.5 px-2 text-slate-600">Простой, мин</td>
-                  <td className="py-3.5 px-2 text-center">140</td>
-                  <td className="py-3.5 px-2 text-center text-[#10B981] flex items-center justify-center gap-1">75 <span className="text-[10px]">✓</span></td>
-                  <td className="py-3.5 px-2 text-center">95</td>
-                </tr>
-                <tr className="hover:bg-slate-50/50 transition-colors">
-                  <td className="py-3.5 px-2 text-slate-600">Нарушения (тех.)</td>
-                  <td className="py-3.5 px-2 text-center">2</td>
-                  <td className="py-3.5 px-2 text-center text-[#10B981] flex items-center justify-center gap-1">0 <span className="text-[10px]">✓</span></td>
-                  <td className="py-3.5 px-2 text-center">1</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </ModalOverlay>
-  );
-};
+export const AlgorithmModal = ({ onClose, analytics }) => (
+  <ModalOverlay onClose={onClose}>
+    <div className="bg-white rounded-2xl shadow-xl w-[550px] max-w-[95vw] relative p-7">
+      <button onClick={onClose} className="absolute top-4 right-4 text-slate-500 hover:text-slate-800" aria-label="Закрыть">✕</button>
+      <h2 className="text-[17px] font-bold text-slate-800 mb-3">Сравнение алгоритмов</h2>
+      <p className="text-[12px] text-slate-600 mb-5">
+        Пока работает базовый сценарий с порядком серийности. Для сравнения B2 и B3
+        необходимы их реальные расчёты на одинаковом наборе данных — вымышленные
+        показатели не выводятся.
+      </p>
+      <table className="w-full text-[12px] text-left">
+        <thead className="text-slate-500 border-b border-slate-200">
+          <tr><th className="py-2">Показатель</th><th>Базовый сценарий</th><th>B2 / B3</th></tr>
+        </thead>
+        <tbody className="text-slate-700">
+          <tr className="border-b border-slate-100"><td className="py-3">Фактических выдач</td><td>{analytics?.totalOperations ?? '—'}</td><td>Не реализованы</td></tr>
+          <tr className="border-b border-slate-100"><td className="py-3">Выдач с задержкой сверх допуска</td><td>{analytics?.delayedOperations ?? '—'}</td><td>—</td></tr>
+          <tr className="border-b border-slate-100"><td className="py-3">Средняя задержка</td><td>{analytics?.avgDelayMin == null ? '—' : `${analytics.avgDelayMin} мин`}</td><td>—</td></tr>
+          <tr><td className="py-3">Средний интервал выдачи</td><td>{analytics?.avgIntervalMin == null ? '—' : `${analytics.avgIntervalMin} мин`}</td><td>—</td></tr>
+        </tbody>
+      </table>
+      <div className="text-[11px] text-slate-400 mt-4">Данные базового сценария — из фактических операций симулятора; результаты B2/B3 нельзя подтвердить до реализации.</div>
+    </div>
+  </ModalOverlay>
+);
 
 export const SimulatorModal = ({ onClose, state, onState }) => {
   // Ползунки (0..100) <-> параметры симулятора:

@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import LeftPanel from './components/LeftPanel';
 import RightSidebar from './components/RightSidebar';
 import { AlgorithmModal, SimulatorModal } from './components/Modals';
 import MainWorkspace from './components/MainWorkspace';
+import AnalyticsModal from './components/AnalyticsModal';
 import { useLive } from './api/useLive';
 import { control } from './api/client';
 import { fmtDate, fmtTime } from './utils/format';
@@ -12,9 +13,10 @@ export default function App() {
   const [isRightPanelOpen, setRightPanelOpen] = useState(false);
   const [isAlgoModalOpen, setAlgoModalOpen] = useState(false);
   const [isSimModalOpen, setSimModalOpen] = useState(false);
+  const [isAnalyticsOpen, setAnalyticsOpen] = useState(false);
 
   // Живые данные симулятора (опрос бэкенда раз в секунду)
-  const { battery, state, ovens, machines, feed, events, error, applyState } = useLive();
+  const { battery, state, ovens, machines, feed, events, analytics, error, applyState } = useLive();
   const [actionError, setActionError] = useState(null);
 
   // ПУСК / ПАУЗА / СТОП
@@ -39,7 +41,10 @@ export default function App() {
       {/* Центральная часть */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-[500px]">
         <header className="h-[68px] bg-white border-b border-slate-200 flex items-center justify-between px-6 flex-shrink-0 z-10 shadow-sm">
-          <h1 className="text-[16px] font-bold tracking-tight text-slate-800">{battery?.name ?? 'Коксовая батарея №1'} · Контроль графика выдачи кокса</h1>
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
+            <h1 className="text-[16px] font-bold tracking-tight text-slate-800">{battery?.name ?? 'Коксовая батарея №1'} · Контроль графика выдачи кокса</h1>
+            <span className="text-[10px] text-blue-700 bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5 font-bold whitespace-nowrap" title="Проверка установленной версии фронтенда">UI V3.2</span>
+          </div>
           
           <div className="flex items-center gap-4">
             <div className="bg-slate-100 text-slate-600 px-3.5 py-1.5 rounded-full text-[11px] font-semibold">
@@ -81,6 +86,13 @@ export default function App() {
                 )}
               </button>
               
+              <button type="button" onClick={() => setAnalyticsOpen(true)}
+                className="h-8 px-3 border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-md inline-flex items-center justify-center gap-1.5 text-[11px] font-bold whitespace-nowrap transition-colors"
+                aria-label="Открыть производственную аналитику" title="Аналитика текущего прогона">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18" /><path d="M7 16v-5M12 16V7M17 16v-9" /></svg>
+                Аналитика
+              </button>
+
               <button onClick={() => setAlgoModalOpen(true)} className="w-8 h-8 border border-slate-200 bg-white hover:bg-slate-50 rounded-md flex flex-col items-center justify-center gap-0.5 transition-colors group">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-slate-400 group-hover:text-blue-500 transition-colors"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
                 <span className="text-[7px] font-bold text-slate-500 leading-none group-hover:text-blue-500 transition-colors">Алго</span>
@@ -102,14 +114,15 @@ export default function App() {
         )}
 
         <div className="flex-1 overflow-y-auto bg-slate-100">
-          <MainWorkspace ovens={ovens} machines={machines} feed={feed} />
+          <MainWorkspace ovens={ovens} machines={machines} feed={feed} state={state} battery={battery} />
         </div>
       </div>
 
       {/* Правая панель теперь стоит в flex-потоке, а не абсолютно */}
       {isRightPanelOpen && <RightSidebar onClose={() => setRightPanelOpen(false)} events={events} state={state} />}
       
-      {isAlgoModalOpen && <AlgorithmModal onClose={() => setAlgoModalOpen(false)} />}
+      {isAnalyticsOpen && <AnalyticsModal onClose={() => setAnalyticsOpen(false)} analytics={analytics} state={state} battery={battery} />}
+      {isAlgoModalOpen && <AlgorithmModal onClose={() => setAlgoModalOpen(false)} analytics={analytics} />}
       {isSimModalOpen && <SimulatorModal onClose={() => setSimModalOpen(false)} state={state} onState={applyState} />}
     </div>
   );

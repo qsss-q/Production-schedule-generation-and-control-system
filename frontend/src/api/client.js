@@ -7,6 +7,8 @@
 
 async function request(url, options = {}) {
   const res = await fetch(url, {
+    // Живая телеметрия не должна подставляться из HTTP-кэша браузера.
+    cache: 'no-store',
     headers: { 'Content-Type': 'application/json' },
     ...options,
   });
@@ -18,7 +20,7 @@ async function request(url, options = {}) {
     // ответ не JSON — оставим body = null
   }
   if (!res.ok) {
-    throw new Error(body?.error?.message ?? body?.message ?? `HTTP ${res.status}`);
+    throw new Error(`HTTP ${res.status}: ${body?.error?.message ?? body?.message ?? 'Ошибка запроса'}`);
   }
   return body;
 }
@@ -43,9 +45,11 @@ const send = (method, data) => ({
 // ---------- Симулятор (/api/v1) ----------
 
 export const getBattery = () => v1('/battery');
+export const getSnapshot = () => v1('/snapshot');
 export const getState = () => v1('/state');
 export const getOvens = () => v1('/ovens?zoom=battery');
 export const getMachines = () => v1('/machines');
+export const getAnalytics = (limit = 20) => v1(`/analytics?limit=${limit}`);
 export const getFeed = (limit = 20) => v1(`/feed?limit=${limit}`);
 export const getEvents = (limit = 200) => v1(`/events?limit=${limit}`);
 

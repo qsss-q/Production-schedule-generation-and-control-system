@@ -1,64 +1,45 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { getBattery, getEvents, getFeed, getMachines, getOvens, getState } from './client';
+import { useCallback, useEffect, useState } from 'react';
+import { getSnapshot } from './client';
 
-// Опрос бэкенда раз в секунду: время симуляции, печи, машины, лента, события.
-// setTimeout вместо setInterval, чтобы запросы не накладывались друг на друга.
+// V3: все показания одной модельной минуты приходят одним ответом.
+// Важное свойство: если бэкенд старый и /snapshot отсутствует, не смешиваем
+// новое время с кэшированными печами — показываем явную ошибку.
 export function useLive(intervalMs = 1000) {
   const [data, setData] = useState({
-    battery: null,
-    state: null,
-    ovens: [],
-    machines: [],
-    feed: null,
-    events: [],
+    battery: null, state: null, ovens: [], machines: [],
+    analytics: null, feed: null, events: [],
   });
   const [error, setError] = useState(null);
-  const batteryLoaded = useRef(false);
 
   useEffect(() => {
     let alive = true;
     let timer;
-
     const tick = async () => {
       try {
-        const [state, ovens, machines, feed, events] = await Promise.all([
-          getState(),
-          getOvens(),
-          getMachines(),
-          getFeed(20),
-          getEvents(200),
-        ]);
+        const snapshot = await getSnapshot();
         if (!alive) return;
-        setData((prev) => ({ ...prev, state, ovens, machines, feed, events }));
+        // Новый объект и новый список печей на каждом тике — гарантируем
+        // свежие props для всех открытых карточек и мини-печей.
+        setData({ ...snapshot, ovens: (snapshot.ovens ?? []).map((oven) => ({ ...oven })) });
         setError(null);
-
-        // паспорт батареи нужен один раз; если не получилось — повторим на следующем тике
-        if (!batteryLoaded.current) {
-          try {
-            const battery = await getBattery();
-            if (alive) {
-              batteryLoaded.current = true;
-              setData((prev) => ({ ...prev, battery }));
-            }
-          } catch {
-            // не критично
-          }
-        }
       } catch (e) {
-        if (alive) setError(e);
+        if (alive) {
+          setError(new Error(
+            e.message?.includes('404')
+              ? 'Старый бэкенд: /api/v1/snapshot отсутствует. Пересоберите coke-app и coke-front.'
+              : e.message,
+          ));
+        }
       } finally {
         if (alive) timer = setTimeout(tick, intervalMs);
       }
     };
-
     tick();
-    return () => {
-      alive = false;
-      clearTimeout(timer);
-    };
+    return () => { alive = false; clearTimeout(timer); };
   }, [intervalMs]);
 
-  // после нажатия ПУСК/ПАУЗА сразу показываем ответ сервера, не дожидаясь следующего опроса
+  // После ПУСК/ПАУЗА шапка меняется сразу; следующий единый снимок
+  // в течение секунды синхронизирует остальные показания.
   const applyState = useCallback((state) => {
     setData((prev) => ({ ...prev, state }));
   }, []);

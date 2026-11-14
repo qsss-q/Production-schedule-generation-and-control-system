@@ -49,6 +49,10 @@ public final class Simulator {
     private final double[] loadDoneAt;       // факт окончания загрузки камеры
 
     private final List<Event> events = new ArrayList<>();
+    /** Подтверждённые выдачи: фактическое и плановое время для аналитики. */
+    private final List<DischargeRecord> dischargeHistory = new ArrayList<>();
+    /** Номер печи в последней выдаче — нужен для пути тушильного вагона. */
+    private int lastDischargeOven = 0;
 
     private long simMin = 0;
     private int nextIssue = 0;
@@ -178,26 +182,35 @@ public final class Simulator {
         events.add(new Event(m(pushStart), Event.Type.DISCHARGE, p,
                 "выдача: слот %.1f, факт %.1f, выталкивание %.1f мин"
                         .formatted(planned, pushStart, pushDur)));
+        dischargeHistory.add(new DischargeRecord(p, planned, pushStart));
+        lastDischargeOven = p;
         discharges++;
 
         // ДСМ снимает дверь до выталкивания.
         double doorArrive = doorMachine.readyAt(p, pitch);
         double doorOffEnd = doorArrive + cfg.doorRemoveMin();
-        doorMachine.addBusy(doorMachine.kind.travelMin(doorMachine.pos(), p, pitch)
-                + doorMachine.kind.setupMin + cfg.doorRemoveMin());
+        double doorApproach = doorMachine.kind.travelMin(doorMachine.pos(), p, pitch)
+                + doorMachine.kind.setupMin;
+        doorMachine.addBusy(doorApproach + cfg.doorRemoveMin());
+        doorMachine.addBusyPeriod(doorArrive - doorApproach, doorOffEnd);
         doorMachine.commit(p, doorOffEnd);
 
         // КВ выталкивает пирог и остаётся у печи.
-        pusher.addBusy(pusher.kind.travelMin(pusher.pos(), p, pitch)
-                + pusher.kind.setupMin + pushDur);
+        double pushApproach = pusher.kind.travelMin(pusher.pos(), p, pitch)
+                + pusher.kind.setupMin;
+        pusher.addBusy(pushApproach + pushDur);
+        pusher.addBusyPeriod(pushStart - pushApproach, pushEnd);
         pusher.commit(p, pushEnd);
 
         // ТВ принимает пирог и едет к тушильной башне, затем разгружается.
         double tower = towerPos();
         double tvToTower = quenchCar.kind.travelMin(p, tower, pitch);
         double tvFree = pushEnd + cfg.takeMin() + tvToTower + cfg.unloadMin();
-        quenchCar.addBusy(quenchCar.kind.travelMin(quenchCar.pos(), p, pitch)
-                + quenchCar.kind.setupMin + cfg.takeMin() + tvToTower + cfg.unloadMin());
+        double quenchApproach = quenchCar.kind.travelMin(quenchCar.pos(), p, pitch)
+                + quenchCar.kind.setupMin;
+        quenchCar.addBusy(quenchApproach + cfg.takeMin() + tvToTower + cfg.unloadMin());
+        quenchCar.addBusyPeriod(pushStart - quenchApproach, pushStart);
+        quenchCar.addBusyPeriod(pushEnd, tvFree);
         quenchCar.commit(tower, tvFree);
 
         // УВ берёт шихту у угольной башни и загружает камеру.
@@ -207,14 +220,16 @@ public final class Simulator {
                 loadingCar.freeAt() + uvToTower + loadingCar.kind.setupMin
                         + uvToOven + loadingCar.kind.setupMin);
         double loadEnd = loadStart + cfg.loadMin();
-        loadingCar.addBusy(uvToTower + uvToOven
-                + 2 * loadingCar.kind.setupMin + cfg.loadMin());
+        double loadApproach = uvToTower + uvToOven + 2 * loadingCar.kind.setupMin;
+        loadingCar.addBusy(loadApproach + cfg.loadMin());
+        loadingCar.addBusyPeriod(loadStart - loadApproach, loadEnd);
         loadingCar.commit(p, loadEnd);
 
         // ДСМ возвращается и ставит дверь после загрузки.
         double doorOnStart = Math.max(loadEnd, doorMachine.readyAt(p, pitch));
         double doorOnEnd = doorOnStart + cfg.doorInstallMin();
         doorMachine.addBusy(doorMachine.kind.setupMin + cfg.doorInstallMin());
+        doorMachine.addBusyPeriod(doorOnStart, doorOnEnd);
         doorMachine.commit(p, doorOnEnd);
 
         // Печь: коксование начинается с конца загрузки.
@@ -379,7 +394,7 @@ public final class Simulator {
 
     /** Утилизация машины: доля времени в переездах и операциях. */
     private double util(Machine mch) {
-        return simMin == 0 ? 0 : Math.min(1.0, mch.busyMin() / simMin);
+        return simMin == 0 ? 0 : Math.min(1.0, mch.busyMinutesUntil(simMin) / simMin);
     }
 
     /** Срез состояния машины. */
@@ -395,14 +410,26 @@ public final class Simulator {
         }
     }
 
+    public record DischargeRecord(int ovenNo, double plannedMin, double actualMin) { }
+
+    /** Фактическая история операций, от самой ранней до последней; без прогноза. */
+    public List<DischargeRecord> dischargeHistory() {
+        return List.copyOf(dischargeHistory);
+    }
+
+    public int lastDischargeOven() { return lastDischargeOven; }
+
     public int discharges() { return discharges; }
     public int lateCount() { return lateCount; }
     public int overholdCount() { return overholdCount; }
     public int pushJams() { return pushJams; }
     public int ovenFaults() { return ovenFaults; }
 
-    /** Средний фактический интервал выдач, мин. Норматив Δt = cycle/N. */
+    /** Средний фактический интервал между завершёнными выдачами (не время / число выдач). */
     public double avgIntervalMin() {
-        return discharges == 0 ? Double.NaN : (double) simMin / discharges;
+        int n = dischargeHistory.size();
+        if (n < 2) return Double.NaN;
+        return (dischargeHistory.get(n - 1).actualMin()
+                - dischargeHistory.get(0).actualMin()) / (n - 1);
     }
 }

@@ -1,5 +1,8 @@
 package ru.evraz.koks.sim;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Отдельная машина комплекта: позиция вдоль батареи, занятость и
  * накопленная рабочая загрузка. Симулятор спрашивает у машины
@@ -18,7 +21,10 @@ public final class Machine {
     private double pos;       // позиция вдоль батареи (номер печи; башни — за торцом)
     private double freeAt;    // момент доступности для следующей задачи
     private int tasksDone;
-    private double busyMin;   // переезды + приладка + операции, без ожидания
+    private double busyMin;   // запланированные переезды + операции, для совместимости API
+    private final List<BusyPeriod> busyPeriods = new ArrayList<>();
+
+    private record BusyPeriod(double startMin, double endMin) { }
 
     public Machine(MachineKind kind, String name, double startPos) {
         this.kind = kind;
@@ -53,6 +59,20 @@ public final class Machine {
      */
     public void addBusy(double minutes) {
         if (minutes > 0) busyMin += minutes;
+    }
+
+    /** Реальная нагрузка до now: не считаем операции, запланированные в будущем. */
+    public void addBusyPeriod(double fromMin, double untilMin) {
+        if (untilMin > fromMin) busyPeriods.add(new BusyPeriod(fromMin, untilMin));
+    }
+
+    public double busyMinutesUntil(double nowMin) {
+        double total = 0;
+        for (BusyPeriod period : busyPeriods) {
+            total += Math.max(0, Math.min(nowMin, period.endMin())
+                    - Math.max(0, period.startMin()));
+        }
+        return total;
     }
 
     // --- состояние для экспорта (график, карта машин) ---

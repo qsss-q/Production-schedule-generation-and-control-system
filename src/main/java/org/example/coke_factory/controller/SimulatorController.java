@@ -34,6 +34,12 @@ public class SimulatorController {
         return ApiResponse.ok(simulator.battery());
     }
 
+    /** Единый снимок: состояние и проценты печей не расходятся по времени. */
+    @GetMapping("/snapshot")
+    public ApiResponse<SimulatorService.SnapshotDto> snapshot() {
+        return ApiResponse.ok(simulator.snapshot());
+    }
+
     @GetMapping("/state")
     public ApiResponse<SimulatorService.StateDto> state() {
         return ApiResponse.ok(simulator.state());
@@ -51,6 +57,13 @@ public class SimulatorController {
     @GetMapping("/machines")
     public ApiResponse<List<SimulatorService.MachineDto>> machines() {
         return ApiResponse.ok(simulator.machines());
+    }
+
+    /** Только фактические операции: план/факт, отклонения и загрузка машин. */
+    @GetMapping("/analytics")
+    public ApiResponse<SimulatorService.AnalyticsDto> analytics(
+            @RequestParam(defaultValue = "20") int limit) {
+        return ApiResponse.ok(simulator.analytics(limit));
     }
 
     @GetMapping("/feed")
