@@ -1,11 +1,15 @@
 package org.example.coke_factory.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.example.coke_factory.service.SimulatorService.ConfigRequest;
 import org.example.coke_factory.service.SimulatorService.ControlRequest;
 import org.example.coke_factory.service.SimulatorService.FailureRequest;
+import org.example.coke_factory.service.SimulatorService.StateDto;
 import java.time.Instant;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import ru.evraz.koks.sim.Simulator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -187,6 +191,68 @@ class SimulatorServiceTest {
                     .filter(m -> "quenchCar".equals(m.type())).findFirst().orElseThrow();
             assertThat(wagon.pos()).isBetween(1.0, 110.0);
         }
+    }
+
+    @Test
+    void exportedStateSurvivesJsonFileAndRestoresTheRun() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        service.control(new ControlRequest("step", 480L));
+        Simulator.BatteryState snapshot = service.exportState();
+        // файл — это JSON: его могли сохранить, открыть и отредактировать вручную
+        Simulator.BatteryState fromFile = mapper.readValue(
+                mapper.writeValueAsBytes(snapshot), Simulator.BatteryState.class);
+
+        service.control(new ControlRequest("step", 300L));          // успели уйти дальше
+        assertThat(service.state().simMinutes()).isEqualTo(780);
+        StateDto after = service.importState(fromFile);
+
+        assertThat(after.simMinutes()).isEqualTo(480);
+        assertThat(after.running()).isFalse();
+        assertThat(mapper.writeValueAsString(service.exportState()))
+                .isEqualTo(mapper.writeValueAsString(snapshot));
+
+        // продолжение после загрузки такое же, как если бы сохранения не было
+        SimulatorService uninterrupted = new SimulatorService();
+        uninterrupted.control(new ControlRequest("step", 480L));
+        uninterrupted.control(new ControlRequest("step", 240L));
+        service.control(new ControlRequest("step", 240L));
+        assertThat(service.events(200)).isEqualTo(uninterrupted.events(200));
+        assertThat(service.ovens()).isEqualTo(uninterrupted.ovens());
+    }
+
+    @Test
+    void importReplacesConfigurationWithTheOneFromState() {
+        SimulatorService other = new SimulatorService();
+        other.configure(new ConfigRequest(null, 777L, 0.02, 0.003));
+        other.control(new ControlRequest("step", 120L));
+
+        StateDto after = service.importState(other.exportState());
+
+        assertThat(after.seed()).isEqualTo(777L);
+        assertThat(after.pushJamProb()).isEqualTo(0.02);
+        assertThat(service.battery()).isEqualTo(other.battery());
+    }
+
+    @Test
+    void brokenStateFileIsRejectedAndKeepsCurrentRun() {
+        service.control(new ControlRequest("step", 240L));
+        Simulator.BatteryState snapshot = service.exportState();
+        var withoutOvens = new Simulator.BatteryState(snapshot.formatVersion(), snapshot.config(),
+                snapshot.simMin(), snapshot.nextIssue(), snapshot.lastDischargeOven(), snapshot.discharges(),
+                snapshot.lateCount(), snapshot.overholdCount(), snapshot.pushJams(), snapshot.ovenFaults(),
+                snapshot.forcedPushJam(), snapshot.randomDraws(),
+                snapshot.planStart(), snapshot.planStartsMin(), snapshot.ovenUnavailable(),
+                snapshot.skipped(), snapshot.revision(),
+                List.of(), snapshot.machines(), snapshot.events(), snapshot.dischargeHistory());
+
+        assertThatThrownBy(() -> service.importState(withoutOvens))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("печей");
+        assertThat(service.state().simMinutes()).isEqualTo(240);
+        assertThat(service.state().counters().discharges()).isEqualTo(snapshot.discharges());
+
+        assertThatThrownBy(() -> service.importState(null))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
 }

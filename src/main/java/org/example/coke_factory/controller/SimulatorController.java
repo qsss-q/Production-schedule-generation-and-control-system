@@ -1,13 +1,21 @@
 package org.example.coke_factory.controller;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.example.coke_factory.dto.ApiResponse;
 import org.example.coke_factory.entity.AuditLog;
 import org.example.coke_factory.service.AuditService;
 import org.example.coke_factory.service.ScheduleService;
 import org.example.coke_factory.service.SimulatorService;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import ru.evraz.koks.sim.Simulator;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
@@ -26,6 +34,7 @@ public class SimulatorController {
     private final SimulatorService simulator;
     private final ScheduleService schedule;
     private final AuditService audit;
+    private final ObjectMapper objectMapper;
 
     // ---------------- чтение ----------------
 
@@ -104,6 +113,40 @@ public class SimulatorController {
         audit.log("SIMULATOR_FAILURE", "Simulator", null,
                 "Сгенерирован отказ: " + request.type() + where);
         return ApiResponse.ok(state);
+    }
+
+    // ---------------- выгрузка и загрузка состояния батареи ----------------
+
+    /**
+     * Выгрузить состояние батареи в файл. Ответ — сам документ без конверта
+     * { success, data, error }: ссылку можно открыть в браузере и сохранить,
+     * а полученный файл отправить обратно в POST /simulator/state/import.
+     */
+    @GetMapping("/simulator/state/export")
+    public ResponseEntity<byte[]> exportState() throws JsonProcessingException {
+        Simulator.BatteryState state = simulator.exportState();
+        byte[] document = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(state);
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                        .filename("battery-state-%dmin.json".formatted(state.simMin()),
+                                StandardCharsets.UTF_8)
+                        .build()
+                        .toString())
+                .body(document);
+    }
+
+    /** Загрузить состояние батареи из файла, полученного через /simulator/state/export. */
+    @PostMapping("/simulator/state/import")
+    public ApiResponse<SimulatorService.StateDto> importState(
+            @RequestBody Simulator.BatteryState state) {
+        String before = simulator.state().simTime();
+        SimulatorService.StateDto after = simulator.importState(state);
+        audit.log("SIMULATOR_IMPORT_STATE", "Simulator", null,
+                "Импорт состояния батареи: было %s, загружено %s (%d печей, схема %s)"
+                        .formatted(before, after.simTime(),
+                                state.config().ovenCount(), state.config().seriality()));
+        return ApiResponse.ok(after);
     }
 
     // ---------------- график ----------------

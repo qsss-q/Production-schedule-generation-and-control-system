@@ -1,9 +1,11 @@
--- ОБОРУДОВАНИЕ: 69 печей (как в симуляторе) + выталкиватель (недоступен) + тушильный вагон
+-- ОБОРУДОВАНИЕ: 69 печей (как в симуляторе) + все машины доступны.
+-- Начальное состояние демо (docs/09 §1): «все 4 машины доступны» —
+-- недоступность приходит событием, а не стартовым справочником.
 INSERT INTO equipment (name, type, available)
 SELECT * FROM (
                   SELECT 'Печь П-' || g AS name, 'OVEN' AS type, true AS available
                   FROM generate_series(1, 69) AS g
-                  UNION ALL SELECT 'Выталкиватель', 'PUSHER', false
+                  UNION ALL SELECT 'Выталкиватель', 'PUSHER', true
                   UNION ALL SELECT 'Тушильный вагон №1', 'QUENCHING_CAR', true
               ) AS t
 WHERE NOT EXISTS (SELECT 1 FROM equipment);

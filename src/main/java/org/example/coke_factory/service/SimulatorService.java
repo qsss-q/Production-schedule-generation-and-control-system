@@ -98,7 +98,7 @@ public class SimulatorService {
                     yield b > a ? clamp((sim.simMinutes() - a) / (b - a) * 100) : 100;
                 }
                 case READY, OVERHOLD -> 100;
-                case EMPTY, FAULT -> 0;
+                case EMPTY, FAULT, UNAVAILABLE -> 0;
             };
             double deviation = st == OvenState.OVERHOLD
                     ? Math.max(0, sim.simMinutes() - sim.readyAt(n)) : 0;
@@ -122,8 +122,15 @@ public class SimulatorService {
             return new MachineDto(m.code(), machineType(m.code()), m.name(),
                     m.runningAt(now) ? "running" : "idle", round2(pos),
                     oven, x, location(m.code(), atBattery), iso(m.freeAt()),
-                    (int) Math.round(m.utilization() * 100));
+                    (int) Math.round(m.utilization() * 100),
+                    m.down(), downUntilIso(m));
         }).toList();
+    }
+
+    /** Конец простоя машины по часам предприятия; «до возврата» — null. */
+    private static String downUntilIso(Simulator.MachineStatus m) {
+        if (!m.down() || m.downUntil() >= Simulator.FAR) return null;
+        return iso(m.downUntil());
     }
 
     /**
@@ -264,6 +271,25 @@ public class SimulatorService {
         return state();
     }
 
+    /** Полный снимок батареи — то, что уходит в файл при выгрузке состояния. */
+    public synchronized Simulator.BatteryState exportState() {
+        return sim.exportState();
+    }
+
+    /**
+     * Загрузить состояние из снимка: время, печи, машины и журнал событий заменяются
+     * содержимым файла, симуляция встаёт на паузу. Журнал действий оператора живёт
+     * в базе и не откатывается. При ошибке в файле текущий симулятор остаётся нетронутым.
+     */
+    public synchronized StateDto importState(Simulator.BatteryState state) {
+        Simulator restored = Simulator.restore(state);
+        config = restored.config();
+        sim = restored;
+        running = false;
+        carryMinutes = 0;
+        return state();
+    }
+
     /** «Сформировать график». Пока снимок текущего порядка серийности и прогноза. */
     public synchronized ScheduleDto generate(int limit) {
         FeedDto f = feedDto(limit);
@@ -313,7 +339,8 @@ public class SimulatorService {
 
     public record MachineDto(String code, String type, String name, String status,
                              double pos, Integer currentOvenNumber, Integer currentXIndex,
-                             String location, String busyUntil, int utilizationPct) {
+                             String location, String busyUntil, int utilizationPct,
+                             boolean down, String downUntil) {
     }
 
     public record FeedItemDto(int ovenNumber, String eventType, String title,
@@ -367,6 +394,7 @@ public class SimulatorService {
             case READY -> "ready";
             case OVERHOLD -> "overhold";
             case FAULT -> "fault";
+            case UNAVAILABLE -> "unavailable";
         };
     }
 
@@ -380,8 +408,9 @@ public class SimulatorService {
 
     private static String eventSeverity(Event e) {
         return switch (e.type()) {
-            case LATE, OVERHOLD -> "warning";
+            case LATE, OVERHOLD, SKIPPED, EXCLUDED -> "warning";
             case FAULT -> e.detail().contains("обогрев") ? "emergency" : "critical";
+            case MACHINE_DOWN -> "critical";
             default -> "info";
         };
     }
