@@ -293,9 +293,11 @@ sequenceDiagram
     "serialityScheme": "9-2",
     "maxIntervalBetweenDischargesMin": 30,
     "leadTimeToFailureMin": 45,
-    "emergencyOrders": [
-      { "ovenNumber": 17, "priority": "high", "note": "срочный заказ" }
-    ],
+    "holdPolicy": {
+      "notifyAfterMin": 5,
+      "autoSkipAfterMin": 0,
+      "onlyOvenLate": true
+    },
     "dryCokeTargetMoisturePct": 6.0
   }
 }
@@ -307,6 +309,10 @@ sequenceDiagram
 > «Очень хорошая идея вынести туда параметры, которые влияют на возникновение
 > событий (как сейчас — время до срыва, максимальное время между выдачами и
 > приоритетность). Точно выбор самой схемы работы батареи (2-1, 5-2, 9-2).»
+
+> **«Приоритетность» — не порядок печей.** Порядок задаёт схема серийности, и он жёсткий
+> (H1). Срочность живёт в плане выпуска (H9) и в политике исключений, а не в очереди:
+> переставить печь «вперёд» нельзя, а пропустить — можно, с записью в журнале (`docs/10`).
 
 Плюс блок ограничений, который на макете был подписан «Временные ограничения»
 и «Доступность оборудования» — они описывают, какие печи выведены из серии
@@ -423,7 +429,7 @@ sequenceDiagram
   "batteryId": "…",
   "periodStart": "2026-10-05T00:00:00Z",
   "periodEnd": "2026-10-12T00:00:00Z",
-  "algorithmCodes": ["b1_fifo", "b2_idle", "b3_priority"],
+  "algorithmCodes": ["b1_fifo", "b2_idle", "b3_smooth"],
   "params": { "serialityScheme": "9-2" }
 }
 ```
@@ -436,18 +442,29 @@ sequenceDiagram
       { "code": "late_operations",    "label": "Просрочено операций", "better": "lower", "unit": "шт" },
       { "code": "uniformity",         "label": "Равномерность",      "better": "higher", "unit": "%" },
       { "code": "idle_min",           "label": "Простой",            "better": "lower", "unit": "мин" },
+      { "code": "max_overhold_min",   "label": "Макс. передержка",   "better": "lower", "unit": "мин" },
+      { "code": "interval_spread_min","label": "Разброс интервалов", "better": "lower", "unit": "мин" },
       { "code": "constraint_violations", "label": "Нарушений (тех.)", "better": "lower", "unit": "шт" }
     ],
     "runs": [
       {
         "algorithmCode": "b1_fifo",
-        "algorithmName": "FIFO",
-        "values": { "late_operations": 3, "uniformity": 18, "idle_min": 140, "constraint_violations": 2 }
+        "algorithmName": "FIFO (эталон)",
+        "reference": true,
+        "values": { "late_operations": 5, "uniformity": 84.1, "idle_min": 144,
+                    "max_overhold_min": 57, "interval_spread_min": 8.2, "constraint_violations": 0 }
       },
       {
         "algorithmCode": "b2_idle",
-        "algorithmName": "Простой",
-        "values": { "late_operations": 1, "uniformity": 75, "idle_min": 95, "constraint_violations": 0 }
+        "algorithmName": "Догон долга",
+        "values": { "late_operations": 2, "uniformity": 91.3, "idle_min": 104,
+                    "max_overhold_min": 34, "interval_spread_min": 2.6, "constraint_violations": 0 }
+      },
+      {
+        "algorithmCode": "b3_smooth",
+        "algorithmName": "Сглаживание",
+        "values": { "late_operations": 2, "uniformity": 93.0, "idle_min": 118,
+                    "max_overhold_min": 18, "interval_spread_min": 1.1, "constraint_violations": 0 }
       }
     ]
   }
@@ -457,6 +474,15 @@ sequenceDiagram
 Критерии — ровно те четыре, что перечислены в методичке:
 количество просроченных операций, равномерность загрузки, время простоя
 оборудования, соблюдение технологических ограничений.
+
+`max_overhold_min` и `interval_spread_min` (M9 и M8) добавлены сверх методички: без них
+сравнение B2 и B3 сводится к простою, то есть к метрике, которую B2 оптимизирует
+по построению (`docs/05` §6). `reference: true` у B1 означает, что строка показывается,
+но в выборе не участвует.
+
+Сравнивать можно только прогоны с одинаковым `inputHash` (состояние, seed, исключения,
+`holdPolicy`). Иначе — `409 INPUT_MISMATCH`: сравнение разных входов выдаёт разницу,
+которой нет.
 
 ---
 

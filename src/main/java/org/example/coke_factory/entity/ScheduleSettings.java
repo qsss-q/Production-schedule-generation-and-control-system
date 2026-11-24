@@ -36,11 +36,12 @@ public class ScheduleSettings {
     @Column(name = "max_idle_minutes")
     private Integer maxIdleMinutes;
 
-    // приоритет срочных заказов: "LOW", "MEDIUM", "HIGH"
+    // устарело: срочность живёт в плане выпуска (H9), а не в порядке печей (docs/05 §5)
     @Column(name = "urgent_priority")
     private String urgentPriority;
 
-    // алгоритм: "FIFO" (В1), "IDLE_OPTIMIZATION" (В2), "URGENT_FIRST" (В3)
+    // алгоритм: "FIFO" (B1), "IDLE_OPTIMIZATION" (B2), "SMOOTH" (B3);
+    // значение "URGENT_FIRST" выведено из употребления — см. docs/10 §6.2
     private String algorithm;
 
     // какие настройки сейчас применены
