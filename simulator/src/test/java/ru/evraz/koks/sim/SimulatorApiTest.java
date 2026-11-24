@@ -100,13 +100,21 @@ class SimulatorApiTest {
     @Test
     void injectedHeatingFault_marksOvenAndShiftsReadiness() {
         var sim = new Simulator(cfg(0));
+        double readyBefore = sim.readyAt(1);   // печь 1 коксуется: готовность ≈ Δt − запас
         sim.injectFailure(Simulator.FailureType.OVEN_HEATING);
 
         assertEquals(1, sim.ovenFaults());
         assertEquals(OvenState.FAULT, sim.state(1));
-        assertEquals(30, sim.readyAt(1), 1e-9, "ремонт обогрева 30 мин с текущего момента");
+        // отказ в середине коксования: нагрев стоит 30 мин → готовность +30 мин,
+        // а не «до конца ремонта»
+        assertEquals(readyBefore + 30, sim.readyAt(1), 1e-9);
         assertTrue(sim.events().stream().anyMatch(e ->
                 e.type() == Event.Type.FAULT && e.ovenNo() == 1));
+
+        // повторный отказ внутри того же простоя — тот же простой, не второй
+        sim.injectOvenHeatingFault(1);
+        assertEquals(1, sim.ovenFaults());
+        assertEquals(readyBefore + 30, sim.readyAt(1), 1e-9);
     }
 
     @Test

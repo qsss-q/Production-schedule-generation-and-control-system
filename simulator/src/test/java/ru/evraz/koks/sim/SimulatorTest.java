@@ -205,4 +205,73 @@ class SimulatorTest {
         assertTrue(sim.discharges() < 118, "ТВ должен стать узким горлышком: " + sim.discharges());
         assertTrue(sim.overholdCount() > 0, "печи ждут занятый ТВ и передерживаются");
     }
+
+    @Test
+    void heatFaultMidCoking_shiftsReadinessByRepairMin() {
+        // docs/09 §7: отказ обогрева в середине коксования останавливает нагрев —
+        // готовность уезжает на длительность ремонта, а не «до конца ремонта».
+        var sim = new Simulator(cfg(830, 0.0));
+        sim.advance(30);
+        int p = 35;                                  // печь в середине коксования
+        double readyBefore = sim.readyAt(p);
+        sim.injectOvenHeatingFault(p);
+
+        assertEquals(OvenState.FAULT, sim.state(p));
+        assertEquals(readyBefore + 30, sim.readyAt(p), 1e-9,
+                "нагрев стоит 30 мин: готовность +30");
+
+        sim.advance(40);                             // ремонт закончен
+        assertEquals(OvenState.COKING, sim.state(p), "печь вернулась к коксованию");
+        assertEquals(readyBefore + 30, sim.readyAt(p), 1e-9);
+    }
+
+    @Test
+    void singleJam_delay57AndHalf_andRecovery3MinPerCycle() {
+        // Замер из docs/09 §7, теперь фиксируется тестом: тугой ход 60 мин →
+        // первая задержка ≈ 57,5 мин; печь, принявшая удар, отыгрывает
+        // запас батареи (840 − 830 − 2 − 5) по 3 мин за оборот.
+        var sim = new Simulator(cfg(830, 0.0));
+        sim.advance(13);                             // первая выдача прошла
+        sim.injectFailure(Simulator.FailureType.PUSH_JAM);
+        sim.advance(5L * 840);
+
+        assertEquals(1, sim.pushJams());
+        var h = sim.dischargeHistory();
+        // тугой ход не сдвигает старт своей выдачи — он занимает КВ на 60 мин дольше
+        assertEquals(0, h.get(1).actualMin() - h.get(1).plannedMin(), 1e-9);
+        // первый пострадавший — следующая выдача
+        assertEquals(57.5, h.get(2).actualMin() - h.get(2).plannedMin(), 0.5,
+                "задержка первой жертвы тугого хода");
+
+        int jamOven = h.get(1).ovenNo();
+        double prev = Double.NaN;
+        int checks = 0;
+        for (var r : h) {
+            if (r.ovenNo() != jamOven) continue;
+            double dev = r.actualMin() - r.plannedMin();
+            if (!Double.isNaN(prev) && prev > 1) {
+                assertEquals(3.0, prev - dev, 0.5, "восстановление ≈ 3 мин/оборот");
+                checks++;
+            }
+            prev = dev;
+        }
+        assertTrue(checks >= 3, "должно быть минимум 3 оборота наблюдения: " + checks);
+    }
+
+    @Test
+    void machineKinematics_respectForcingFloor() {
+        // docs/05 §9: форсированный интервал не может быть меньше 60/(4,9 + 2) ≈ 8,7 мин.
+        // Кинематика машин сама держит пол: замер по фактическим выдачам.
+        var sim = new Simulator(cfg(830, 0.0));
+        sim.advance(13);
+        sim.injectFailure(Simulator.FailureType.PUSH_JAM);
+        sim.advance(840);
+
+        var h = sim.dischargeHistory();
+        for (int i = 2; i < h.size(); i++) {
+            double interval = h.get(i).actualMin() - h.get(i - 1).actualMin();
+            assertTrue(interval >= 8.7 - 1e-9,
+                    "интервал %.2f мин нарушает предел форсирования 8,7 мин".formatted(interval));
+        }
+    }
 }

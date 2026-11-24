@@ -18,10 +18,11 @@ public final class Machine {
     /** Отображаемое имя, например «Коксовыталкиватель». */
     public final String name;
 
-    private double pos;       // позиция вдоль батареи (номер печи; башни — за торцом)
-    private double freeAt;    // момент доступности для следующей задачи
+    private double pos;        // позиция вдоль батареи (номер печи; башни — за торцом)
+    private double freeAt;     // момент окончания текущей задачи
+    private double holdUntil;  // до этого момента машина в простое (отказ, ремонт) и задач не берёт
     private int tasksDone;
-    private double busyMin;   // запланированные переезды + операции, для совместимости API
+    private double busyMin;    // запланированные переезды + операции, для совместимости API
     private final List<BusyPeriod> busyPeriods = new ArrayList<>();
 
     private record BusyPeriod(double startMin, double endMin) { }
@@ -34,10 +35,30 @@ public final class Machine {
 
     /**
      * Момент, к которому машина доедет до целевой позиции и будет
-     * приладена, если начнёт, как только освободится.
+     * приладена, если начнёт, как только освободится и выйдет из простоя.
      */
     public double readyAt(double toPos, double pitchM) {
-        return freeAt + kind.travelMin(pos, toPos, pitchM) + kind.setupMin;
+        return availableAt() + kind.travelMin(pos, toPos, pitchM) + kind.setupMin;
+    }
+
+    /** Когда машина сможет взять задачу: конец текущей задачи или конца простоя — что позже. */
+    public double availableAt() {
+        return Math.max(freeAt, holdUntil);
+    }
+
+    /** Простой до untilMin: задачи не берутся, текущая задача не отменяется. */
+    public void hold(double untilMin) {
+        holdUntil = Math.max(holdUntil, untilMin);
+    }
+
+    /** Снять простой: машина снова берёт задачи, как только освободится. */
+    public void release() {
+        holdUntil = 0;
+    }
+
+    /** В простое ли машина в момент nowMin. */
+    public boolean downAt(double nowMin) {
+        return holdUntil > nowMin + 1e-9;
     }
 
     /**
@@ -75,10 +96,63 @@ public final class Machine {
         return total;
     }
 
+    // --- сохранение и восстановление состояния ---
+
+    /**
+     * Снимок машины — часть снимка всей батареи ({@link Simulator#exportState()}).
+     *
+     * @param kind         тип машины, имя константы {@link MachineKind}
+     * @param pos          позиция вдоль батареи, номера печей
+     * @param freeAt       конец текущей задачи, мин симуляции
+     * @param holdUntil    конец простоя (отказ, ремонт), мин симуляции; 0 — машина в работе
+     * @param tasksDone    выполнено задач
+     * @param busyMin      накопленная работа (переезды и операции), мин
+     * @param busyPeriods  занятые периоды парами {@code [начало, конец, …]}, мин симуляции
+     */
+    public record Snapshot(String kind, double pos, double freeAt, double holdUntil, int tasksDone,
+                           double busyMin, double[] busyPeriods) { }
+
+    /** Снимок текущего состояния машины. */
+    public Snapshot exportState() {
+        double[] flat = new double[busyPeriods.size() * 2];
+        for (int i = 0; i < busyPeriods.size(); i++) {
+            flat[2 * i] = busyPeriods.get(i).startMin;
+            flat[2 * i + 1] = busyPeriods.get(i).endMin;
+        }
+        return new Snapshot(kind.name(), pos, freeAt, holdUntil, tasksDone, busyMin, flat);
+    }
+
+    /** Восстановить состояние из снимка; тип машины должен совпадать. */
+    public void restoreState(Snapshot snapshot) {
+        if (snapshot == null)
+            throw new IllegalArgumentException("нет снимка машины " + kind.code);
+        if (!kind.name().equals(snapshot.kind()))
+            throw new IllegalArgumentException("тип машины в снимке %s, ожидался %s"
+                    .formatted(snapshot.kind(), kind.name()));
+        if (!Double.isFinite(snapshot.pos()) || !Double.isFinite(snapshot.freeAt())
+                || !Double.isFinite(snapshot.holdUntil()))
+            throw new IllegalArgumentException("у машины " + kind.code + " позиция или время — не число");
+        double[] flat = snapshot.busyPeriods();
+        if (flat != null && flat.length % 2 != 0)
+            throw new IllegalArgumentException("занятые периоды машины " + kind.code
+                    + " должны идти парами [начало, конец]");
+        pos = snapshot.pos();
+        freeAt = snapshot.freeAt();
+        holdUntil = Math.max(0, snapshot.holdUntil());
+        tasksDone = snapshot.tasksDone();
+        busyMin = snapshot.busyMin();
+        busyPeriods.clear();
+        if (flat != null) {
+            for (int i = 0; i < flat.length; i += 2)
+                addBusyPeriod(flat[i], flat[i + 1]);
+        }
+    }
+
     // --- состояние для экспорта (график, карта машин) ---
 
     public double pos() { return pos; }
     public double freeAt() { return freeAt; }
+    public double holdUntil() { return holdUntil; }
     public int tasksDone() { return tasksDone; }
     public double busyMin() { return busyMin; }
 
