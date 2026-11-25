@@ -83,16 +83,26 @@ public record ScheduleInput(
      * Предел форсирования — по умолчанию расчётный {@link #forcingFloorMin(double)}.
      */
     public static ScheduleInput of(Simulator sim, int horizon) {
+        return of(sim, horizon, sim.deltaMin());
+    }
+
+    /**
+     * То же с переопределением шага сетки: ручка «допустимый шаг между выдачами»
+     * из панели управления. План строится с этим шагом; порядок печей и физические
+     * пределы не меняются. Шаг заметно меньше предела форсирования не принимается.
+     */
+    public static ScheduleInput of(Simulator sim, int horizon, double stepMinOverride) {
         int h = Math.max(1, Math.min(horizon, sim.rotationRemaining()));
-        double delta = sim.deltaMin();
+        double step = Double.isFinite(stepMinOverride) && stepMinOverride > 0
+                ? stepMinOverride : sim.deltaMin();
         return new ScheduleInput(
                 sim.ovensAhead(h),
                 sim.readinessAhead(h),
                 sim.earliestAhead(h),
                 sim.simMinutes(),
-                (sim.nextIssue() + 1) * delta,
-                delta,
-                forcingFloorMin(delta),
+                (sim.nextIssue() + 1) * step,
+                step,
+                forcingFloorMin(step),
                 sim.rotationRemaining());
     }
 }

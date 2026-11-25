@@ -61,6 +61,7 @@ public class ScheduleRunService {
     private final CokeOvenRepository ovens;
     private final AuditService audit;
     private final ObjectMapper mapper;
+    private final org.example.coke_factory.repository.ScheduleSettingsRepository settings;
 
     /** Ревизия на момент последнего пересчёта — чтобы ловить новые возмущения. */
     private long lastRevision;
@@ -84,14 +85,20 @@ public class ScheduleRunService {
 
     /**
      * Посчитать график выбранным алгоритмом от текущего состояния батареи.
-     * План устанавливается в живой прогон (выдача пойдёт по нему), офлайн-реплей
-     * на копии батареи даёт метрики того же входа. Прошлые прогоны остаются
-     * в истории со своими операциями.
+     * Алгоритм, шаг сетки и порог просрочки берутся из активных настроек панели
+     * «Управление графиком», если в запросе не заданы явно, — настройки больше
+     * не декорация. План устанавливается в живой прогон (выдача пойдёт по нему),
+     * офлайн-реплей на копии батареи даёт метрики того же входа. Прошлые прогоны
+     * остаются в истории со своими операциями.
      */
     @Transactional
     public RunDto createRun(CreateRunRequest request, String reason) {
-        ScheduleAlgorithm algo = ScheduleAlgorithms.byCode(
-                request.algorithm() == null ? "b1_fifo" : request.algorithm());
+        org.example.coke_factory.entity.ScheduleSettings active =
+                settings.findFirstByActiveTrue().orElse(null);
+        String algorithmCode = request.algorithm() != null ? request.algorithm()
+                : active != null && active.getAlgorithm() != null
+                ? settingsAlgorithm(active.getAlgorithm()) : "b1_fifo";
+        ScheduleAlgorithm algo = ScheduleAlgorithms.byCode(algorithmCode);
         if (request.seriality() != null
                 && !request.seriality().strip().equals(simulator.seriality()))
             throw new IllegalArgumentException(
@@ -103,7 +110,9 @@ public class ScheduleRunService {
                             .formatted(request.seed(), simulator.state().seed()));
 
         ScheduleInput input = simulator.planInput(
-                request.horizon() == null ? Integer.MAX_VALUE : request.horizon());
+                request.horizon() == null ? Integer.MAX_VALUE : request.horizon(),
+                active != null && active.getStepMinutes() != null && active.getStepMinutes() > 0
+                        ? active.getStepMinutes().doubleValue() : Double.NaN);
         ScheduleRun previous = runs.findTopByStatusOrderByCreatedAtDesc(RunStatus.CALCULATED)
                 .orElse(null);
         List<ScheduleOperation> manualOps = previous == null ? List.of()
@@ -116,7 +125,8 @@ public class ScheduleRunService {
         Simulator.BatteryState snapshot = simulator.snapshotState();
         long from = snapshot.simMin();
         long to = Math.max(from + 1, (long) Math.ceil(plan[plan.length - 1]));
-        Metrics.Result metrics = replay(snapshot, algo, from, to);
+        ReplayOut replayed = replay(snapshot, algo, from, to);
+        Metrics.Result metrics = replayed.metrics();
 
         simulator.applyPlan(plan);
 
@@ -127,7 +137,7 @@ public class ScheduleRunService {
         run.setReason(reason == null || reason.isBlank() ? "формирование графика" : reason);
         run.setStatus(RunStatus.CALCULATED);
         run.setInputHash(inputHash(input, algo));
-        run.setMetricsJson(toJson(metricsJson(metrics, copy, snapshot)));
+        run.setMetricsJson(toJson(metricsJson(metrics, replayed.skipped(), snapshot)));
         run.setWindowFromMin(from);
         run.setWindowToMin(to);
         if (request.holdNotifyMin() != null) run.setHoldNotifyMin(request.holdNotifyMin());
@@ -210,7 +220,7 @@ public class ScheduleRunService {
                 op.setActualStart(SimulatorService.toPlantTime(fact.actualMin()));
                 op.setActualEnd(SimulatorService.toPlantTime(fact.actualMin() + OPERATION_MINUTES));
                 op.setDeviationMinutes((int) Math.round(delay));
-                if (delay > LATE_TOLERANCE_MIN) {
+                if (delay > lateToleranceMin()) {
                     op.setStatus(OperationStatus.OVERDUE);   // выполнено с опозданием — терминально
                 } else if (now < fact.actualMin() + OPERATION_MINUTES) {
                     op.setStatus(OperationStatus.IN_PROGRESS); // выдача началась, операция идёт
@@ -223,7 +233,7 @@ public class ScheduleRunService {
                     op.setStatus(OperationStatus.IMPOSSIBLE);
                     changed.add(op);
                 }
-            } else if (now > plannedMin + OPERATION_MINUTES + LATE_TOLERANCE_MIN) {
+            } else if (now > plannedMin + OPERATION_MINUTES + lateToleranceMin()) {
                 if (status != OperationStatus.OVERDUE) {
                     op.setStatus(OperationStatus.OVERDUE);
                     changed.add(op);
@@ -405,7 +415,7 @@ public class ScheduleRunService {
         for (String code : codes) {
             ScheduleAlgorithm algo = ScheduleAlgorithms.byCode(code);
             Simulator.BatteryState base = otherScheme ? baseSnapshot : snapshot;
-            Metrics.Result m = replay(base, algo, from, from + window);
+            Metrics.Result m = replay(base, algo, from, from + window).metrics();
             runRows.add(new CompareRunDto(algo.code(), algo.title(), otherScheme ? request.seriality().strip() : simulator.seriality(),
                     Map.of("late_operations", m.lateCount(),
                             "total_lateness_min", Math.round(m.totalDelayMin()),
@@ -424,15 +434,19 @@ public class ScheduleRunService {
         return new CompareResult(criteria(), runRows, note);
     }
 
+    /** Результат офлайн-реплея: метрики окна и пропущенные слоты за время реплея. */
+    private record ReplayOut(Metrics.Result metrics, int skipped) { }
+
     /**
      * Офлайн-реплей алгоритма на копии батареи: план применяется от текущего
      * состояния и пересчитывается на границе каждого плана — как живая система
      * после возмущения. Без этого голая сетка за пределами первого плана бьёт
      * по печам с фазовым долгом и забивает разницу алгоритмов.
      */
-    private Metrics.Result replay(Simulator.BatteryState snapshot, ScheduleAlgorithm algo,
-                                  double from, double to) {
+    private ReplayOut replay(Simulator.BatteryState snapshot, ScheduleAlgorithm algo,
+                             double from, double to) {
         Simulator copy = Simulator.restore(snapshot);
+        int skippedBefore = copy.skipped();
         while (copy.simMinutes() < to - 1e-9) {
             ScheduleInput input = ScheduleInput.of(copy, Integer.MAX_VALUE);
             double[] plan = algo.build(input);
@@ -440,8 +454,9 @@ public class ScheduleRunService {
             long target = (long) Math.min(Math.ceil(plan[plan.length - 1]), Math.ceil(to));
             copy.advance(Math.max(1, target - (long) copy.simMinutes()));
         }
-        return Metrics.compute(copy, from, to,
-                simulator.toleranceMin(), simulator.cokingMin(), simulator.loadMin());
+        return new ReplayOut(Metrics.compute(copy, from, to,
+                simulator.toleranceMin(), simulator.cokingMin(), simulator.loadMin()),
+                copy.skipped() - skippedBefore);
     }
 
     public record CompareRunDto(String algorithmCode, String algorithmName, String seriality,
@@ -513,6 +528,69 @@ public class ScheduleRunService {
         return ovenNumber + ":" + Math.round(plannedMin);
     }
 
+    /** Значение алгоритма из настроек панели → код планировщика. */
+    private static String settingsAlgorithm(String value) {
+        return switch (value == null ? "" : value.strip().toUpperCase(java.util.Locale.ROOT)) {
+            case "IDLE_OPTIMIZATION", "B2_IDLE" -> "b2_idle";
+            case "SMOOTH", "B3_SMOOTH" -> "b3_smooth";
+            case "FIFO", "B1_FIFO" -> "b1_fifo";
+            default -> "b1_fifo";
+        };
+    }
+
+    /** Порог просрочки из настроек: «макс. простой до срыва», по умолчанию 5 мин. */
+    private double lateToleranceMin() {
+        return settings.findFirstByActiveTrue()
+                .map(s -> s.getMaxIdleMinutes())
+                .filter(m -> m != null && m > 0)
+                .map(Integer::doubleValue)
+                .orElse(LATE_TOLERANCE_MIN);
+    }
+
+    // ------------------------------------------------------------------
+    // выгрузка результатов (docs/04 §8, для слайдов и отчёта)
+    // ------------------------------------------------------------------
+
+    /** План/факт/статус/отклонение по операциям прогона. */
+    @Transactional
+    public String exportOperationsCsv(String id) {
+        ScheduleRun run = runs.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("прогон %s не найден".formatted(id)));
+        StringBuilder sb = new StringBuilder();
+        sb.append("# Прогон ").append(run.getId())
+                .append("; алгоритм ").append(run.getAlgorithm())
+                .append("; схема ").append(run.getSeriality())
+                .append("; причина: ").append(run.getReason()).append('\n');
+        sb.append("oven_number;planned_start;actual_start;planned_end;status;manual;deviation_min\n");
+        for (ScheduleOperation op : operations.findByRunIdOrderByIdAsc(id)) {
+            sb.append(op.getOvenNumber()).append(';')
+                    .append(op.getPlannedStart()).append(';')
+                    .append(op.getActualStart() == null ? "" : op.getActualStart()).append(';')
+                    .append(op.getPlannedEnd()).append(';')
+                    .append(op.getStatus()).append(';')
+                    .append(Boolean.TRUE.equals(op.getManual())).append(';')
+                    .append(op.getDeviationMinutes() == null ? 0 : op.getDeviationMinutes()).append('\n');
+        }
+        return sb.toString();
+    }
+
+    /** Метрики прогона M1–M9 + пропуски и исключения. */
+    @Transactional
+    public String exportMetricsCsv(String id) {
+        ScheduleRun run = runs.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("прогон %s не найден".formatted(id)));
+        Map<String, Object> metrics = run.getMetricsJson() == null
+                ? Map.of() : fromJson(run.getMetricsJson());
+        StringBuilder sb = new StringBuilder();
+        sb.append("# Метрики прогона ").append(run.getId())
+                .append(" (").append(run.getAlgorithm()).append(", ").append(run.getSeriality())
+                .append("), окно [").append(run.getWindowFromMin()).append("; ")
+                .append(run.getWindowToMin()).append("] мин симуляции\n");
+        sb.append("metric;value\n");
+        metrics.forEach((key, value) -> sb.append(key).append(';').append(value).append('\n'));
+        return sb.toString();
+    }
+
     private static String inputHash(ScheduleInput input, ScheduleAlgorithm algo) {
         String source = "%s|%d|%d|%s|%s".formatted(algo.code(),
                 (long) input.nowMin(), (long) input.firstSlotMin(), input.horizon(),
@@ -526,7 +604,8 @@ public class ScheduleRunService {
         }
     }
 
-    private Map<String, Object> metricsJson(Metrics.Result m, Simulator copy, Simulator.BatteryState snapshot) {
+    private Map<String, Object> metricsJson(Metrics.Result m, int skippedDuringReplay,
+                                            Simulator.BatteryState snapshot) {
         Map<String, Object> json = new LinkedHashMap<String, Object>();
         json.put("totalDischarges", m.totalDischarges());
         json.put("lateCount", m.lateCount());
@@ -539,10 +618,11 @@ public class ScheduleRunService {
         json.put("calcUniformity", finiteOrNull(m.calcUniformity()));
         json.put("intervalStdMin", finiteOrNull(m.intervalStdMin()));
         json.put("maxOverholdMin", finiteOrNull(m.maxOverholdMin()));
-        json.put("skipped", copy.skipped() - snapshot.skipped());
+        json.put("skipped", skippedDuringReplay);
         int excluded = 0;
-        for (int p = 1; p <= copy.ovenCount(); p++)
-            if (!copy.ovenAvailable(p)) excluded++;
+        boolean[] withdrawn = snapshot.ovenUnavailable();
+        for (int p = 1; p <= snapshot.config().ovenCount(); p++)
+            if (withdrawn[p]) excluded++;
         json.put("excluded", excluded);
         return json;
     }

@@ -1,12 +1,14 @@
--- ОБОРУДОВАНИЕ: 69 печей (как в симуляторе) + все машины доступны.
+-- ОБОРУДОВАНИЕ: 69 печей (как в симуляторе) + комплект из 4 машин, все доступны.
 -- Начальное состояние демо (docs/09 §1): «все 4 машины доступны» —
 -- недоступность приходит событием, а не стартовым справочником.
 INSERT INTO equipment (name, type, available)
 SELECT * FROM (
                   SELECT 'Печь П-' || g AS name, 'OVEN' AS type, true AS available
                   FROM generate_series(1, 69) AS g
-                  UNION ALL SELECT 'Выталкиватель', 'PUSHER', true
-                  UNION ALL SELECT 'Тушильный вагон №1', 'QUENCHING_CAR', true
+                  UNION ALL SELECT 'Выталкиватель КВ-1', 'PUSHER', true
+                  UNION ALL SELECT 'Двересъёмная машина ДСМ-1', 'DOOR_MACHINE', true
+                  UNION ALL SELECT 'Тушильный вагон ТВ-1', 'QUENCHING_CAR', true
+                  UNION ALL SELECT 'Углезагрузочный вагон УВ-1', 'LOADING_CAR', true
               ) AS t
 WHERE NOT EXISTS (SELECT 1 FROM equipment);
 
@@ -55,10 +57,10 @@ WHERE NOT EXISTS (SELECT 1 FROM schedule_operations);
 INSERT INTO notifications (equipment_id, type, title, message, created_at, is_read)
 SELECT e.id, v.type, v.title, v.message, DATE '2026-10-05' + v.t, v.is_read
 FROM (VALUES
-          ('Выталкиватель',      'ACCIDENT',       'Авария · Выталкиватель',          'Блокировка привода: выдача П-5 невозможна', TIME '10:20', false),
-          ('Печь П-3',           'SCHEDULE_BREAK', 'Срыв графика · П-3',              'Передержка кокса +25 мин',                  TIME '10:58', false),
-          ('Печь П-2',           'DEVIATION',      'Отступление · П-2',               'Прогноз +6 мин к плану',                    TIME '10:30', false),
-          ('Тушильный вагон №1', 'INFO',           'Информация · Тушильный вагон №1', 'Переход на резервный путь №2',              TIME '10:50', false),
+          ('Выталкиватель КВ-1',  'ACCIDENT',       'Авария · Выталкиватель КВ-1',     'Блокировка привода: выдача П-5 невозможна', TIME '10:20', false),
+          ('Печь П-3',            'SCHEDULE_BREAK', 'Срыв графика · П-3',              'Передержка кокса +25 мин',                  TIME '10:58', false),
+          ('Печь П-2',            'DEVIATION',      'Отступление · П-2',               'Прогноз +6 мин к плану',                    TIME '10:30', false),
+          ('Тушильный вагон ТВ-1','INFO',           'Информация · Тушильный вагон ТВ-1','Переход на резервный путь №2',             TIME '10:50', false),
           ('Печь П-1',           'INFO',           'Печь П-1',                        'Коксование завершено',                      TIME '11:05', true),
           ('Печь П-4',           'INFO',           'Печь П-4',                        'Начало выгрузки',                           TIME '10:52', true),
           ('Печь П-5',           'INFO',           'Печь П-5',                        'Загрузка шихты завершена',                  TIME '09:30', true)

@@ -6,6 +6,7 @@ import org.example.coke_factory.entity.ScheduleOperation;
 import org.example.coke_factory.service.ScheduleRunService;
 import org.example.coke_factory.service.SimulatorService;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import ru.evraz.koks.sim.MachineKind;
 
@@ -24,6 +25,7 @@ public class ScheduleRunController {
 
     private final ScheduleRunService runs;
     private final SimulatorService simulator;
+    private final org.example.coke_factory.service.DirectoryCsvService csv;
 
     // ---------------- прогоны ----------------
 
@@ -67,6 +69,43 @@ public class ScheduleRunController {
             @PathVariable long id,
             @RequestBody ScheduleRunService.ManualEditRequest request) {
         return ApiResponse.ok(runs.manualEdit(id, request));
+    }
+
+    // ---------------- импорт справочников и выгрузка результатов ----------------
+
+    /** Импорт справочника печей (docs/04 §2): состав батареи заменяется, симулятор пересобирается. */
+    @PostMapping(value = "/import/ovens", consumes = "text/csv")
+    public ApiResponse<org.example.coke_factory.service.DirectoryCsvService.ImportResult> importOvens(
+            @RequestBody String document) {
+        return ApiResponse.ok(csv.importOvens(document));
+    }
+
+    /** Импорт справочника машин (docs/04 §3): строки failed дают простой в живом прогоне. */
+    @PostMapping(value = "/import/machines", consumes = "text/csv")
+    public ApiResponse<org.example.coke_factory.service.DirectoryCsvService.ImportResult> importMachines(
+            @RequestBody String document) {
+        return ApiResponse.ok(csv.importMachines(document));
+    }
+
+    /**
+     * Выгрузка результатов прогона в CSV (для отчёта и слайдов): type=operations —
+     * план/факт/статус/отклонение по операциям; type=metrics — метрики M1–M9.
+     * Ответ — сам документ без конверта.
+     */
+    @GetMapping("/schedule-runs/{id}/export.csv")
+    public ResponseEntity<String> exportRun(@PathVariable String id,
+                                            @RequestParam(defaultValue = "operations") String type) {
+        String document = "operations".equals(type)
+                ? runs.exportOperationsCsv(id)
+                : runs.exportMetricsCsv(id);
+        return ResponseEntity.ok()
+                .header(org.springframework.http.HttpHeaders.CONTENT_DISPOSITION,
+                        org.springframework.http.ContentDisposition.attachment()
+                                .filename("run-%s-%s.csv".formatted(id.substring(0, 8), type),
+                                        java.nio.charset.StandardCharsets.UTF_8)
+                                .build().toString())
+                .contentType(org.springframework.http.MediaType.valueOf("text/csv;charset=UTF-8"))
+                .body(document);
     }
 
     // ---------------- доступность оборудования (docs/10) ----------------

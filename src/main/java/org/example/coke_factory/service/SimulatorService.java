@@ -305,6 +305,12 @@ public class SimulatorService {
         return ru.evraz.koks.sim.planner.ScheduleInput.of(sim, horizon);
     }
 
+    /** То же с переопределением шага сетки (ручка «допустимый шаг между выдачами»). */
+    public synchronized ru.evraz.koks.sim.planner.ScheduleInput planInput(int horizon,
+                                                                          double stepMinOverride) {
+        return ru.evraz.koks.sim.planner.ScheduleInput.of(sim, horizon, stepMinOverride);
+    }
+
     /** Установить план выдач в живой прогон: выдача идёт по плану, а не по сетке k·Δt. */
     public synchronized void applyPlan(double[] plannedStartsMin) {
         sim.setPlan(plannedStartsMin);
@@ -382,6 +388,27 @@ public class SimulatorService {
     /** Модельная минута прогона. */
     public synchronized double simMin() {
         return sim.simMinutes();
+    }
+
+    /**
+     * Пересобрать батарею под новый справочник печей: новый SimConfig с другим
+     * числом печей, новый симулятор в стационаре; перечисленные печи выводятся
+     * из серии. Прогон и журнал событий начинаются заново — это импорт состава,
+     * а не правка живого графика.
+     */
+    public synchronized void rebuildBattery(int ovenCount, List<Integer> unavailableOvens) {
+        config = new SimConfig(
+                Math.max(2, ovenCount), config.seriality(), config.cycleMin(),
+                config.cokingMin(), config.toleranceMin(), config.pitchM(),
+                config.pushMin(), config.doorRemoveMin(), config.doorInstallMin(),
+                config.pushJamProb(), config.pushJamRepairMin(), config.takeMin(),
+                config.unloadMin(), config.loadMin(), config.towerDistanceM(),
+                config.ovenFaultPerHour(), config.ovenFaultRepairMin(), config.seed());
+        sim = new Simulator(config);
+        running = false;
+        carryMinutes = 0;
+        for (Integer oven : unavailableOvens)
+            sim.setOvenAvailable(oven, false, "импорт справочника: печь в ремонте");
     }
 
     // ------------------------------------------------------------------

@@ -114,7 +114,8 @@ class ScheduleRunServiceTest {
         });
 
         service = new ScheduleRunService(simulator, runRepo, opRepo, ovenRepo, audit,
-                new ObjectMapper());
+                new ObjectMapper(),
+                mock(org.example.coke_factory.repository.ScheduleSettingsRepository.class));
     }
 
     @Test

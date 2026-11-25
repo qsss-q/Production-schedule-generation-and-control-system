@@ -11,4 +11,6 @@ import java.util.List;
 @Repository
 public interface EquipmentRepository extends JpaRepository<Equipment, Long> {
     List<Equipment> findByType(EquipmentType type);
+
+    List<Equipment> findByTypeIn(List<EquipmentType> types);
 }
