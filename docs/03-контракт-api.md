@@ -597,10 +597,10 @@ sequenceDiagram
 | `GET /api/v1/simulator/state/export` | Выгрузить состояние батареи в файл JSON |
 | `POST /api/v1/simulator/state/import` | Загрузить состояние из этого файла |
 
-> Статус на 25.11.2026. В коде работают `control`, `state/export` и `state/import`.
-> `PUT /simulator/config` в коде принимает только `speedFactor`, `seed`, `pushJamProb`
-> и `ovenFaultPerHour`; остальное из блока ниже не реализовано. `GET /simulator/config`
-> не написан — текущие параметры приходят в `GET /simulator/state`.
+> Статус на 25.11.2026 (вечер). В коде работают `control`, `state/export`, `state/import`
+> и `PUT /simulator/config` — он принимает `speedFactor`, `seed`, `pushJamProb`,
+> `ovenFaultPerHour` и **`seriality`** (схема 2-1/5-2/9-2, пересобирает симулятор).
+> `GET /simulator/config` не написан — текущие параметры приходят в `GET /simulator/state`.
 
 ### Выгрузка и загрузка состояния батареи
 
@@ -662,6 +662,28 @@ curl -X POST $BASE/api/v1/simulator/state/import \
 
 > Куратор: «Возможно, параметров для симуляции будет больше — всякая частота
 > возникновения новых событий и вероятности возникновения событий-отказов».
+
+### Реализовано 25.11.2026 (вечер): прогоны, правка, доступность, файлы
+
+Контракт §3 «Планирование» и §4 «Импорт» закрыты в объёме MVP:
+
+| Эндпоинт | Статус |
+|---|---|
+| `POST /api/v1/schedule-runs` | работает: тело `{algorithm, seriality?, seed?, horizon?}`; алгоритм, шаг сетки и порог просрочки по умолчанию — из активных настроек панели; план устанавливается в симулятор; метрики — офлайн-реплеем на копии батареи (тот же снимок и seed); ответ — прогоны §3 |
+| `GET /api/v1/schedule-runs`, `/schedule-runs/active`, `/schedule-runs/{id}` | работают: список, действующий, конкретный; пересчёт по возмущению создаёт новую версию с `parentId`, старая — `ARCHIVED` |
+| `GET /api/v1/schedule-runs/{id}/operations` | работает; операции с живыми статусами `PLANNED → IN_PROGRESS → DONE` / `OVERDUE` / `IMPOSSIBLE` (печь выведена) |
+| `POST /api/v1/schedule-runs/compare` | работает: `{algorithmCodes, seriality?, windowMin?}`; реплей каждого алгоритма с одной точки; другая схема — батарея в стационаре с тем же seed (реплей той же точки невозможен — порядок другой); случайные отказы за окном сравнения выключены; ответ — критерии и строки §3 |
+| `PATCH /api/v1/schedule-operations/{id}` | работает: `{plannedStart, reason}` — причина обязательна, `manual = true`, запись в журнал, план симулятора сдвигается с последующими операциями (порядок не меняется) |
+| `POST /api/v1/ovens/{n}/availability` | работает: `{available, reason}` — вывод печи из серии / возврат; слот пропускается |
+| `POST /api/v1/machines/{code}/down`, `/up` | работают: `{minutes}` (0 — до возврата); код — `PUSHING`/`DOOR_MACHINE`/`QUENCH_CAR`/`LOADING_CAR` или КВ/ДСМ/ТВ/УВ |
+| `POST /api/v1/import/ovens`, `/import/machines` | работают: тело — CSV по [04](04-форматы-файлов.md) §2–3; печи пересобирают батарею, машины — справочник + простой |
+| `GET /api/v1/schedule-runs/{id}/export.csv?type=operations\|metrics` | работает: план/факт/статусы и метрики прогона; ответ — сам CSV без конверта |
+
+Пересчёт при возмущении: ревизия симулятора (`отказ`, `простой машины`, `вывод печи`)
+меняется → новый прогон-версия тем же алгоритмом, статусы пересинхронизируются.
+`PUT /api/equipment/{id}/availability` теперь тоже применяется к живому прогону,
+а не только к строке справочника. `POST /api/v1/schedule/generate` (старый путь
+фронта) = прогон `b1_fifo` от текущего состояния.
 
 ---
 

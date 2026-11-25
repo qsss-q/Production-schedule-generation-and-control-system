@@ -12,7 +12,7 @@ import java.util.Locale;
  * Эксперимент для слайдов 10–11. Ручной запуск — при обычной сборке
  * пропускается (Assumptions), чтобы 50 суточных прогонов не гонялись
  * на каждый тест:
- * {@code bash gradlew test --tests "*ExperimentRunner" -Dexperiment=1}
+ * {@code EXPERIMENT=1 bash gradlew test --tests "*ExperimentRunner"}
  * Пять режимов отказов × 10 повторов, окно 24 ч, базовый сценарий (сетка k·Δt,
  * как B1 без плана). Плюс сравнение B1/B2/B3 на одном входе — реплей с той же
  * точки, тот же seed, перепланирование на границе плана.
