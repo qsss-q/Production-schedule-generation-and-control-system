@@ -3,6 +3,7 @@ import LeftPanel from './components/LeftPanel';
 import RightSidebar from './components/RightSidebar';
 import { AlgorithmModal, SimulatorModal } from './components/Modals';
 import MainWorkspace from './components/MainWorkspace';
+import TimeScale from './components/TimeScale';
 import AnalyticsModal from './components/AnalyticsModal';
 import { useLive } from './api/useLive';
 import { control } from './api/client';
@@ -36,7 +37,7 @@ export default function App() {
     <div className="flex h-screen bg-[#F1F5F9] text-slate-800 font-sans overflow-hidden">
       
       {/* Левая панель */}
-      <LeftPanel />
+      <LeftPanel ovens={ovens} />
 
       {/* Центральная часть */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-[500px]">
@@ -115,6 +116,11 @@ export default function App() {
 
         <div className="flex-1 overflow-y-auto bg-slate-100">
           <MainWorkspace ovens={ovens} machines={machines} feed={feed} state={state} battery={battery} />
+        </div>
+
+        {/* Шкала времени под рабочим полем: график, статусы, ручной перенос */}
+        <div className="px-4 xl:px-6 pb-4 xl:pb-6 flex-shrink-0 overflow-y-auto bg-slate-100">
+          <TimeScale simTime={state?.simTime} />
         </div>
       </div>
 

@@ -1,7 +1,7 @@
 // Запуск без сборщика: node --test frontend/src/utils/ovenView.test.js
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ovenProgress, ovenView } from './ovenView.js';
+import { ovenProgress, ovenView, overholdShade, legendColor } from './ovenView.js';
 
 const battery = { cokingMin: 830 };
 const stateAt = (minute) => ({ simTime: new Date(Date.UTC(2026, 9, 5, 1, minute)).toISOString() });
@@ -37,6 +37,21 @@ test('другие состояния и резервное значение API
   assert.equal(ovenProgress({ state: 'discharging', progressPct: 94.1 }, stateAt(0), battery), 0);
   assert.equal(ovenProgress({ state: 'fault', progressPct: 20 }, stateAt(0), battery), 0);
   assert.equal(ovenProgress({ state: 'coking', progressPct: 76.1 }, null, null), 76.1);
+});
+
+// Палитра по правке куратора (#27): жёлтый градаций — срыв по масштабу,
+// красный — авария, оранжевый — вне серии. Жёлтый больше не штатное коксование.
+test('жёлтый градациями отражает масштаб простоя, авария красная', () => {
+  assert.equal(overholdShade(10, 5), '#FDE047');
+  assert.equal(overholdShade(30, 5), '#FACC15');
+  assert.equal(overholdShade(100, 5), '#EAB308');
+  const view = ovenView({ state: 'overhold', deviationMin: 90 }, null, null);
+  assert.equal(view.color, '#EAB308');
+  assert.match(view.stat, /Срыв/);
+  assert.equal(ovenView({ state: 'fault' }, null, null).color, '#EF4444');
+  assert.equal(ovenView({ state: 'unavailable' }, null, null).color, '#F97316');
+  assert.notEqual(ovenView({ state: 'coking' }, null, null).color, '#EAB308');
+  assert.notEqual(legendColor('coking'), '#EAB308');
 });
 
 // Регрессия по реальному случаю: API прогрессирует, время в карточке тоже;

@@ -198,6 +198,7 @@ public class SimulatorController {
         if (r.ovenFaultPerHour() != null) sb.append(" отказы обогрева ")
                 .append(state.ovenFaultPerHour()).append(" /печь/ч");
         if (r.seed() != null) sb.append(" seed ").append(state.seed());
+        if (r.seriality() != null) sb.append(" схема серийности ").append(r.seriality());
         return sb.toString();
     }
 }

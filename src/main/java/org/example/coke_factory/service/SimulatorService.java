@@ -236,8 +236,15 @@ public class SimulatorService {
             speedFactor = Math.max(1, Math.min(600, r.speedFactor()));
         }
 
+        // схема серийности проверяется построением порядка: нерабочая схема — ошибка
+        String seriality = config.seriality();
+        if (r.seriality() != null && !r.seriality().strip().equals(seriality)) {
+            ru.evraz.koks.sim.Seriality.Scheme.parse(r.seriality());  // бросит исключение, если схема нерабочая
+            seriality = r.seriality().strip();
+        }
+
         boolean rebuild = r.seed() != null || r.pushJamProb() != null
-                || r.ovenFaultPerHour() != null;
+                || r.ovenFaultPerHour() != null || r.seriality() != null;
         if (rebuild) {
             double jam = r.pushJamProb() != null
                     ? Math.max(0, Math.min(1, r.pushJamProb())) : config.pushJamProb();
@@ -245,7 +252,7 @@ public class SimulatorService {
                     ? Math.max(0, r.ovenFaultPerHour()) : config.ovenFaultPerHour();
             // SimConfig неизменяемый, поэтому собираем новый и пересоздаём симулятор
             config = new SimConfig(
-                    config.ovenCount(), config.seriality(), config.cycleMin(),
+                    config.ovenCount(), seriality, config.cycleMin(),
                     config.cokingMin(), config.toleranceMin(), config.pitchM(),
                     config.pushMin(), config.doorRemoveMin(), config.doorInstallMin(),
                     jam, config.pushJamRepairMin(), config.takeMin(), config.unloadMin(),
@@ -478,7 +485,8 @@ public class SimulatorService {
     }
 
     public record ConfigRequest(Integer speedFactor, Long seed,
-                                Double pushJamProb, Double ovenFaultPerHour) {
+                                Double pushJamProb, Double ovenFaultPerHour,
+                                String seriality) {
     }
 
     public record FailureRequest(String type, Integer ovenNumber) {

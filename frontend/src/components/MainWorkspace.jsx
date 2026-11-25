@@ -142,10 +142,13 @@ export default function MainWorkspace({ ovens = [], machines = [], feed = null, 
           {feedItems.length > 0 ? feedItems.map((it) => (
             <EventRow
               key={`${it.ovenNumber}-${it.plannedAt}`}
-              time={fmtTime(it.predictedAt)}
-              dot={it.severity === 'warning' ? 'bg-[#F97316]' : 'bg-[#3B82F6]'}
+              time={fmtTime(it.plannedAt)}
+              dot={it.severity === 'warning' ? 'bg-[#EAB308]' : 'bg-[#3B82F6]'}
               text={it.title}
-              rightText={it.deviationMin > 0 ? `+${Math.round(it.deviationMin)} мин` : it.relativeLabel}
+              // на ленте и плановое, и фактическое время (правка куратора #26)
+              rightText={it.deviationMin > 0
+                ? `факт ≈ ${fmtTime(it.predictedAt)} (+${Math.round(it.deviationMin)} мин)`
+                : it.relativeLabel}
               highlight={it.deviationMin > 0}
             />
           )) : (

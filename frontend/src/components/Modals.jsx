@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { configure, control, forceFailure } from '../api/client';
+import { useEffect, useState } from 'react';
+import { compareRuns, configure, control, forceFailure } from '../api/client';
 
 // Общая обертка для затемнения фона
 const ModalOverlay = ({ children, onClose }) => (
@@ -8,31 +8,84 @@ const ModalOverlay = ({ children, onClose }) => (
   </div>
 );
 
-export const AlgorithmModal = ({ onClose, analytics }) => (
-  <ModalOverlay onClose={onClose}>
-    <div className="bg-white rounded-2xl shadow-xl w-[550px] max-w-[95vw] relative p-7">
-      <button onClick={onClose} className="absolute top-4 right-4 text-slate-500 hover:text-slate-800" aria-label="Закрыть">✕</button>
-      <h2 className="text-[17px] font-bold text-slate-800 mb-3">Сравнение алгоритмов</h2>
-      <p className="text-[12px] text-slate-600 mb-5">
-        Пока работает базовый сценарий с порядком серийности. Для сравнения B2 и B3
-        необходимы их реальные расчёты на одинаковом наборе данных — вымышленные
-        показатели не выводятся.
-      </p>
-      <table className="w-full text-[12px] text-left">
-        <thead className="text-slate-500 border-b border-slate-200">
-          <tr><th className="py-2">Показатель</th><th>Базовый сценарий</th><th>B2 / B3</th></tr>
-        </thead>
-        <tbody className="text-slate-700">
-          <tr className="border-b border-slate-100"><td className="py-3">Фактических выдач</td><td>{analytics?.totalOperations ?? '—'}</td><td>Не реализованы</td></tr>
-          <tr className="border-b border-slate-100"><td className="py-3">Выдач с задержкой сверх допуска</td><td>{analytics?.delayedOperations ?? '—'}</td><td>—</td></tr>
-          <tr className="border-b border-slate-100"><td className="py-3">Средняя задержка</td><td>{analytics?.avgDelayMin == null ? '—' : `${analytics.avgDelayMin} мин`}</td><td>—</td></tr>
-          <tr><td className="py-3">Средний интервал выдачи</td><td>{analytics?.avgIntervalMin == null ? '—' : `${analytics.avgIntervalMin} мин`}</td><td>—</td></tr>
-        </tbody>
-      </table>
-      <div className="text-[11px] text-slate-400 mt-4">Данные базового сценария — из фактических операций симулятора; результаты B2/B3 нельзя подтвердить до реализации.</div>
-    </div>
-  </ModalOverlay>
-);
+// Сравнение алгоритмов на одном входе: бэкенд делает офлайн-реплей B1/B2/B3
+// с одной и той же точки (тот же снимок батареи и seed), случайные отказы
+// за окном сравнения выключены. Метрики — docs/05 §6.
+export const AlgorithmModal = ({ onClose }) => {
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    compareRuns({ algorithmCodes: ['b1_fifo', 'b2_idle', 'b3_smooth'] })
+      .then((r) => alive && setResult(r))
+      .catch((e) => alive && setError(e.message));
+    return () => { alive = false; };
+  }, []);
+
+  const betterValue = (criterion, values) => {
+    const v = values[criterion.code];
+    if (v == null) return false;
+    const others = result.runs.map((run) => run.values[criterion.code]).filter((x) => x != null);
+    if (others.length < 2) return false;
+    return criterion.better === 'lower' ? v <= Math.min(...others) : v >= Math.max(...others);
+  };
+
+  return (
+    <ModalOverlay onClose={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl w-[720px] max-w-[95vw] relative p-7 max-h-[90vh] overflow-y-auto">
+        <button onClick={onClose} className="absolute top-4 right-4 text-slate-500 hover:text-slate-800" aria-label="Закрыть">✕</button>
+        <h2 className="text-[17px] font-bold text-slate-800 mb-2">Сравнение алгоритмов на одном входе</h2>
+        <p className="text-[12px] text-slate-600 mb-4">
+          Тот же снимок батареи и тот же seed, отличается только план времён —
+          порядок печей общий (H1). Окно сравнения — два оборота батареи.
+        </p>
+        {error && <div className="text-[12px] text-red-600 mb-4">Ошибка сравнения: {error}</div>}
+        {!result && !error && <div className="text-[13px] text-slate-400 py-8 text-center">Считаю реплей трёх алгоритмов…</div>}
+        {result && (
+          <>
+            <table className="w-full text-[12px] text-left">
+              <thead className="text-slate-500 border-b border-slate-200">
+                <tr>
+                  <th className="py-2 pr-2">Показатель</th>
+                  {result.runs.map((run) => (
+                    <th key={run.algorithmCode} className="py-2 px-2 text-center">
+                      {run.algorithmName}
+                      <div className="text-[10px] font-medium text-slate-400">схема {run.seriality}</div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="text-slate-700">
+                {result.criteria.map((criterion) => (
+                  <tr key={criterion.code} className="border-b border-slate-100">
+                    <td className="py-2.5 pr-2">
+                      {criterion.label}
+                      <span className="text-[10px] text-slate-400 ml-1">{criterion.unit}</span>
+                    </td>
+                    {result.runs.map((run) => {
+                      const value = run.values[criterion.code];
+                      const best = betterValue(criterion, run.values);
+                      return (
+                        <td key={run.algorithmCode} className={`py-2.5 px-2 text-center ${best ? 'font-bold text-emerald-700' : ''}`}>
+                          {value == null ? '—' : value}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="text-[11px] text-slate-500 mt-4">{result.inputNote}</div>
+            <div className="text-[11px] text-slate-400 mt-1">
+              Зелёным выделено лучшее значение по критерию. «—» — метрика не измерима в окне (нет двух выдач одной печи).
+            </div>
+          </>
+        )}
+      </div>
+    </ModalOverlay>
+  );
+};
 
 export const SimulatorModal = ({ onClose, state, onState }) => {
   // Ползунки (0..100) <-> параметры симулятора:

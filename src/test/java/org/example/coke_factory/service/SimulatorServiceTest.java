@@ -49,7 +49,7 @@ class SimulatorServiceTest {
 
     @Test
     void speedX30MeansHalfMinutePerTick() {
-        service.configure(new ConfigRequest(30, null, null, null));
+        service.configure(new ConfigRequest(30, null, null, null, null));
         service.control(new ControlRequest("start", null));
         for (int i = 0; i < 10; i++) {
             service.tick();
@@ -91,9 +91,21 @@ class SimulatorServiceTest {
     @Test
     void changingSeedRebuildsSimulator() {
         service.control(new ControlRequest("step", 100L));
-        service.configure(new ConfigRequest(null, 777L, null, null));
+        service.configure(new ConfigRequest(null, 777L, null, null, null));
         assertThat(service.state().simMinutes()).isZero();
         assertThat(service.state().seed()).isEqualTo(777L);
+    }
+
+    @Test
+    void changingSerialityRebuildsSimulator() {
+        assertThat(service.battery().serialityScheme()).isEqualTo("9-2");
+        service.configure(new ConfigRequest(null, null, null, null, "5-2"));
+        assertThat(service.battery().serialityScheme()).isEqualTo("5-2");
+        // порядок выдачи строится по новой схеме: в серии шаг 5
+        assertThat(service.state().nextOvenNumber()).isEqualTo(1);
+        assertThatThrownBy(() -> service.configure(new ConfigRequest(null, null, null, null, "9-3")))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(service.battery().serialityScheme()).isEqualTo("5-2");
     }
 
     @Test
@@ -223,7 +235,7 @@ class SimulatorServiceTest {
     @Test
     void importReplacesConfigurationWithTheOneFromState() {
         SimulatorService other = new SimulatorService();
-        other.configure(new ConfigRequest(null, 777L, 0.02, 0.003));
+        other.configure(new ConfigRequest(null, 777L, 0.02, 0.003, null));
         other.control(new ControlRequest("step", 120L));
 
         StateDto after = service.importState(other.exportState());
