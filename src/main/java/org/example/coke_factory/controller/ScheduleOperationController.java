@@ -19,8 +19,15 @@ public class ScheduleOperationController {
     private final ScheduleOperationRepository repository;
 
     @GetMapping
-    public List<ScheduleOperation> getAll() {
-        return repository.findAll();
+    public List<ScheduleOperation> getAll(
+            @RequestParam(required = false) String runId,
+            @RequestParam(required = false) Boolean manual) {
+        List<ScheduleOperation> ops = runId != null && !runId.isBlank()
+                ? repository.findByRunIdOrderByIdAsc(runId)
+                : repository.findAll();
+        if (manual != null)
+            ops = ops.stream().filter(op -> manual.equals(op.getManual())).toList();
+        return ops;
     }
 
     @GetMapping("/{id}")

@@ -1,5 +1,6 @@
 package org.example.coke_factory.exception;
 
+import org.example.coke_factory.controller.ScheduleRunController;
 import org.example.coke_factory.controller.SimulatorController;
 import org.example.coke_factory.dto.ApiResponse;
 import org.springframework.http.HttpStatus;
@@ -9,10 +10,10 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 /**
- * Ошибки эндпоинтов симулятора (/api/v1) в формате конверта { success:false, error }.
- * Остальные контроллеры (/api/...) этот обработчик не затрагивает.
+ * Ошибки эндпоинтов симулятора и прогонов (/api/v1) в формате конверта
+ * { success:false, error }. Остальные контроллеры (/api/...) не затрагивает.
  */
-@RestControllerAdvice(assignableTypes = SimulatorController.class)
+@RestControllerAdvice(assignableTypes = {SimulatorController.class, ScheduleRunController.class})
 public class ApiExceptionHandler {
 
     @ExceptionHandler(IllegalArgumentException.class)

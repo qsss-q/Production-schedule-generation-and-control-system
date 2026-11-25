@@ -1,74 +1,50 @@
 package org.example.coke_factory.service;
 
 import lombok.RequiredArgsConstructor;
-import org.example.coke_factory.entity.OperationStatus;
 import org.example.coke_factory.entity.ScheduleOperation;
-import org.example.coke_factory.repository.CokeOvenRepository;
 import org.example.coke_factory.repository.ScheduleOperationRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.List;
 
 /**
- * «Сформировать график»: берёт прогноз выдач у симулятора и сохраняет его
- * в БД как плановые операции (таблица schedule_operations).
- *
- * <p>Операции, назначенные оператором вручную (manual = true), не трогаем.
- * Сам алгоритм планирования (B1-B3) — зона Вани: когда он появится,
- * менять нужно только то, откуда берутся элементы графика.
+ * «Сформировать график»: реальный прогон планировщика ({@link ScheduleRunService})
+ * от текущего состояния батареи. План устанавливается в симулятор, операции
+ * получают живые статусы, история прогонов сохраняется — прошлый график
+ * больше не стирается.
  */
 @Service
 @RequiredArgsConstructor
 public class ScheduleService {
 
-    /** Длительность операции выдачи в графике, мин. */
-    private static final int OPERATION_MINUTES = 30;
-
-    private final SimulatorService simulator;
+    private final ScheduleRunService runService;
     private final ScheduleOperationRepository operations;
-    private final CokeOvenRepository ovens;
-    private final AuditService audit;
 
     @Transactional
     public SimulatorService.ScheduleDto generate(int limit) {
-        SimulatorService.ScheduleDto schedule = simulator.generate(limit);
+        ScheduleRunService.RunDto run = runService.createRun(
+                new ScheduleRunService.CreateRunRequest(null, null, null, null, null, null),
+                "формирование графика оператором");
 
-        // прошлый автоматический график заменяем новым
-        operations.deleteByManualFalse();
-
-        List<ScheduleOperation> created = new ArrayList<>();
-        for (SimulatorService.FeedItemDto item : schedule.items()) {
-            // печи в БД названы так же, как в справочнике: «Печь П-12»
-            ovens.findByNameOven("Печь П-" + item.ovenNumber()).ifPresent(oven -> {
-                LocalDateTime start = toPlantTime(item.plannedAt());
-
-                ScheduleOperation op = new ScheduleOperation();
-                op.setOven(oven);
-                op.setOperationType("PUSHING");
-                op.setPlannedStart(start);
-                op.setPlannedEnd(start.plusMinutes(OPERATION_MINUTES));
-                op.setStatus(OperationStatus.PLANNED);
-                op.setPriority(1);
-                op.setManual(false);
-                op.setUrgent(false);
-                op.setDeviationMinutes((int) Math.round(item.deviationMin()));
-                created.add(op);
-            });
-        }
-        operations.saveAll(created);
-
-        audit.log("GENERATE_SCHEDULE", "ScheduleOperation", null,
-                "Сформирован график: %d операций (алгоритм %s)"
-                        .formatted(created.size(), schedule.algorithmCode()));
-
-        return schedule;
+        List<ScheduleOperation> ops = operations.findByRunIdOrderByIdAsc(run.id());
+        List<SimulatorService.FeedItemDto> items = ops.stream()
+                .filter(op -> !Boolean.TRUE.equals(op.getManual()))
+                .limit(Math.max(1, limit))
+                .map(op -> new SimulatorService.FeedItemDto(
+                        op.getOvenNumber(), "discharge_start",
+                        "П-%d · выдача кокса".formatted(op.getOvenNumber()),
+                        iso(op.getPlannedStart()), iso(op.getPlannedStart()),
+                        op.getDeviationMinutes() == null ? 0 : op.getDeviationMinutes(),
+                        "info", "по графику"))
+                .toList();
+        return new SimulatorService.ScheduleDto(run.createdAt(), run.algorithm(),
+                run.totalOperations(), items);
     }
 
-    private static LocalDateTime toPlantTime(String isoInstant) {
-        return LocalDateTime.ofInstant(Instant.parse(isoInstant), SimulatorService.PLANT_ZONE);
+    private static String iso(LocalDateTime plantTime) {
+        return plantTime.atZone(SimulatorService.PLANT_ZONE).toInstant().toString();
     }
 }

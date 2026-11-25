@@ -297,6 +297,94 @@ public class SimulatorService {
     }
 
     // ------------------------------------------------------------------
+    // мост к планировщику и доступности оборудования (docs/05 §7, docs/10)
+    // ------------------------------------------------------------------
+
+    /** Срез входа планировщика из живого прогона: печи, готовность, физический предел. */
+    public synchronized ru.evraz.koks.sim.planner.ScheduleInput planInput(int horizon) {
+        return ru.evraz.koks.sim.planner.ScheduleInput.of(sim, horizon);
+    }
+
+    /** Установить план выдач в живой прогон: выдача идёт по плану, а не по сетке k·Δt. */
+    public synchronized void applyPlan(double[] plannedStartsMin) {
+        sim.setPlan(plannedStartsMin);
+    }
+
+    /** Копия текущего плана живого прогона. */
+    public synchronized double[] currentPlan() {
+        return sim.plan();
+    }
+
+    /** Полная копия снимка состояния — для офлайн-реплея планировщика. */
+    public synchronized Simulator.BatteryState snapshotState() {
+        return sim.exportState();
+    }
+
+    /** Фактические выдачи: печь, план, факт, готовность. */
+    public synchronized List<Simulator.DischargeRecord> dischargeHistory() {
+        return sim.dischargeHistory();
+    }
+
+    /** Возмущений с начала прогона: изменилось — план стоит пересчитать. */
+    public synchronized long revision() {
+        return sim.revision();
+    }
+
+    public synchronized int ovenCount() {
+        return sim.ovenCount();
+    }
+
+    /** Печь доступна (в серии). */
+    public synchronized boolean ovenAvailable(int ovenNo) {
+        return sim.ovenAvailable(ovenNo);
+    }
+
+    /** Вывести печь из серии или вернуть: слот пропускается, порядок не меняется. */
+    public synchronized void setOvenAvailable(int ovenNo, boolean available, String reason) {
+        sim.setOvenAvailable(ovenNo, available, reason);
+    }
+
+    /** Машина встаёт в простой: на minutes минут или до возврата (minutes <= 0). */
+    public synchronized void setMachineDown(MachineKind kind, double minutes) {
+        sim.setMachineDown(kind, minutes);
+    }
+
+    /** Вернуть машину в работу. */
+    public synchronized void setMachineUp(MachineKind kind) {
+        sim.setMachineUp(kind);
+    }
+
+    /** Машина в простое в текущий момент. */
+    public synchronized boolean machineDown(MachineKind kind) {
+        return sim.machineDownAt(kind, sim.simMinutes());
+    }
+
+    /** Схема серийности текущей конфигурации: 9-2 / 5-2 / 2-1. */
+    public synchronized String seriality() {
+        return config.seriality();
+    }
+
+    /** Нормативный период коксования, мин. */
+    public synchronized double cokingMin() {
+        return config.cokingMin();
+    }
+
+    /** Норматив загрузки камеры, мин. */
+    public synchronized double loadMin() {
+        return config.loadMin();
+    }
+
+    /** Допуск опоздания/передержки, мин. */
+    public synchronized double toleranceMin() {
+        return config.toleranceMin();
+    }
+
+    /** Модельная минута прогона. */
+    public synchronized double simMin() {
+        return sim.simMinutes();
+    }
+
+    // ------------------------------------------------------------------
     // DTO (ровно по контракту docs/08)
     // ------------------------------------------------------------------
 
@@ -440,6 +528,17 @@ public class SimulatorService {
 
     static String iso(long min) {
         return iso((double) min);
+    }
+
+    /** Модельная минута → время по часам предприятия (для планов операций в БД). */
+    public static LocalDateTime toPlantTime(double simMinutes) {
+        return LocalDateTime.ofInstant(T0.plusSeconds(Math.round(simMinutes * 60)), PLANT_ZONE);
+    }
+
+    /** Время по часам предприятия → модельная минута (для ручной правки плана). */
+    public static double simMinutesOf(LocalDateTime plantTime) {
+        LocalDateTime anchor = LocalDateTime.ofInstant(T0, PLANT_ZONE);
+        return java.time.Duration.between(anchor, plantTime).toSeconds() / 60.0;
     }
 
     private static String relative(double d) {

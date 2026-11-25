@@ -16,12 +16,12 @@ public interface ScheduleOperationRepository extends JpaRepository<ScheduleOpera
 
     List<ScheduleOperation> findByStatus(OperationStatus status);
 
+    // операции прогона в порядке планирования (для таймлайна и синхронизации статусов)
+    List<ScheduleOperation> findByRunIdOrderByIdAsc(String runId);
+
     // операции, которые пересекаются с окном времени [from, to] (для временной шкалы)
     List<ScheduleOperation> findByPlannedStartLessThanEqualAndPlannedEndGreaterThanEqual(
             LocalDateTime to, LocalDateTime from);
     // ближайшие операции для "ленты событий"
     List<ScheduleOperation> findTop10ByPlannedStartAfterOrderByPlannedStartAsc(LocalDateTime from);
-
-    // удалить автоматически сформированные операции (ручные остаются)
-    void deleteByManualFalse();
 }

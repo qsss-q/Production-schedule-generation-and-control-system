@@ -18,6 +18,14 @@ public class ScheduleOperation {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    /** Прогон, к которому относится операция; null — legacy-операция до внедрения прогонов. */
+    @Column(name = "run_id", length = 36)
+    private String runId;
+
+    /** Номер печи 1..N — быстрый доступ без разбора имени справочника. */
+    @Column(name = "oven_number")
+    private Integer ovenNumber;
+
     @ManyToOne(optional = false)
     @JoinColumn(name = "oven_id", nullable = false)
     private CokeOvens oven;

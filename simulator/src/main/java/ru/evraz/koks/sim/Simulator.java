@@ -602,7 +602,17 @@ public final class Simulator {
             List<OvenSnapshot> ovens,
             List<Machine.Snapshot> machines,
             List<Event> events,
-            List<DischargeRecord> dischargeHistory) { }
+            List<DischargeRecord> dischargeHistory) {
+
+        /** Тот же снимок с другой конфигурацией — например, для офлайн-реплея
+         *  со случайными отказами, выключенными на время сравнения алгоритмов. */
+        public BatteryState withConfig(SimConfig replacement) {
+            return new BatteryState(formatVersion, replacement, simMin, nextIssue,
+                    lastDischargeOven, discharges, lateCount, overholdCount, pushJams,
+                    ovenFaults, forcedPushJam, randomDraws, planStart, planStartsMin,
+                    ovenUnavailable, skipped, revision, ovens, machines, events, dischargeHistory);
+        }
+    }
 
     /**
      * Печь в снимке.
