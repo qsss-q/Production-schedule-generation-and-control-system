@@ -236,6 +236,42 @@ public final class Simulator {
         return out;
     }
 
+    /**
+     * Самое раннее физически возможное начало ближайших выдач — вход планировщика:
+     * машины идут подряд, не ожидая плана, печь выдаётся не раньше своей готовности
+     * и выхода из простоя. Текущий простой машин учитывается; будущие отказы
+     * выталкивания — нет (оптимистичный предел). Живой прогон не затрагивается:
+     * расчёт идёт на клонах комплекта. Слот выведенной печи машин не занимает.
+     */
+    public double[] earliestAhead(int count) {
+        int n = Math.max(0, Math.min(count, order.length));
+        List<Machine> kit = clonedKit();
+        double[] ready = readyAt.clone();
+        double[] out = new double[n];
+        for (int k = 0; k < n; k++) {
+            int p = order[(nextIssue + k) % order.length];
+            if (ovenUnavailable[p]) {
+                out[k] = simMin;            // слот пропускается — цепочку машин не трогаем
+                continue;
+            }
+            double pitch = cfg.pitchM();
+            Machine dm = kit.get(0);
+            Machine kv = kit.get(1);
+            Machine tv = kit.get(2);
+            double t = Math.max(ready[p], kv.readyAt(p, pitch));
+            t = Math.max(t, tv.readyAt(p, pitch));
+            t = Math.max(t, dm.readyAt(p, pitch) + cfg.doorRemoveMin());
+            out[k] = Math.max(t, simMin);   // в прошлом начинать нельзя
+            runKit(kit, ready, p, out[k], cfg.pushMin(), false);
+        }
+        return out;
+    }
+
+    /** Выдач до конца текущего оборота, включая ближайшую. */
+    public int rotationRemaining() {
+        return order.length - (nextIssue % order.length);
+    }
+
     // --- доступность оборудования ---
 
     /**
@@ -320,7 +356,6 @@ public final class Simulator {
     }
 
     private void doDischarge(int p, double planned) {
-        double pitch = cfg.pitchM();
         double pushStart = pushStartFor(p, planned);
 
         // Отказ выталкивания: тугой ход, машина занята дольше.
@@ -358,62 +393,103 @@ public final class Simulator {
         lastDischargeOven = p;
         discharges++;
 
-        // ДСМ снимает дверь до выталкивания.
-        double doorArrive = doorMachine.readyAt(p, pitch);
-        double doorOffEnd = doorArrive + cfg.doorRemoveMin();
-        double doorApproach = doorMachine.kind.travelMin(doorMachine.pos(), p, pitch)
-                + doorMachine.kind.setupMin;
-        doorMachine.addBusy(doorApproach + cfg.doorRemoveMin());
-        doorMachine.addBusyPeriod(doorArrive - doorApproach, doorOffEnd);
-        doorMachine.commit(p, doorOffEnd);
-
-        // КВ выталкивает пирог и остаётся у печи.
-        double pushApproach = pusher.kind.travelMin(pusher.pos(), p, pitch)
-                + pusher.kind.setupMin;
-        pusher.addBusy(pushApproach + pushDur);
-        pusher.addBusyPeriod(pushStart - pushApproach, pushEnd);
-        pusher.commit(p, pushEnd);
-
-        // ТВ принимает пирог и едет к тушильной башне, затем разгружается.
-        double tower = towerPos();
-        double tvToTower = quenchCar.kind.travelMin(p, tower, pitch);
-        double tvFree = pushEnd + cfg.takeMin() + tvToTower + cfg.unloadMin();
-        double quenchApproach = quenchCar.kind.travelMin(quenchCar.pos(), p, pitch)
-                + quenchCar.kind.setupMin;
-        // Вагон занят с выезда к печи и до разгрузки у башни: в окно
-        // [pushStart, pushEnd] он стоит под печью и принимает кокс.
-        quenchCar.addBusy(quenchApproach + cfg.pushMin() + cfg.takeMin() + tvToTower + cfg.unloadMin());
-        quenchCar.addBusyPeriod(pushStart - quenchApproach, pushEnd);
-        quenchCar.addBusyPeriod(pushEnd, tvFree);
-        quenchCar.commit(tower, tvFree);
-
-        // УВ берёт шихту у угольной башни и загружает камеру (не раньше конца своего простоя).
-        double uvToTower = loadingCar.kind.travelMin(loadingCar.pos(), tower, pitch);
-        double uvToOven = loadingCar.kind.travelMin(tower, p, pitch);
-        double loadStart = Math.max(pushEnd,
-                loadingCar.availableAt() + uvToTower + loadingCar.kind.setupMin
-                        + uvToOven + loadingCar.kind.setupMin);
-        double loadEnd = loadStart + cfg.loadMin();
-        double loadApproach = uvToTower + uvToOven + 2 * loadingCar.kind.setupMin;
-        loadingCar.addBusy(loadApproach + cfg.loadMin());
-        loadingCar.addBusyPeriod(loadStart - loadApproach, loadEnd);
-        loadingCar.commit(p, loadEnd);
-
-        // ДСМ возвращается и ставит дверь после загрузки.
-        double doorOnStart = Math.max(loadEnd, doorMachine.readyAt(p, pitch));
-        double doorOnEnd = doorOnStart + cfg.doorInstallMin();
-        doorMachine.addBusy(doorMachine.kind.setupMin + cfg.doorInstallMin());
-        doorMachine.addBusyPeriod(doorOnStart, doorOnEnd);
-        doorMachine.commit(p, doorOnEnd);
-
-        // Печь: коксование начинается с конца загрузки.
+        double loadEnd = runKit(machines(), readyAt, p, pushStart, pushDur, true);
         dischargeAt[p] = pushStart;
         loadDoneAt[p] = loadEnd;
-        readyAt[p] = loadEnd + cfg.cokingMin();
 
         events.add(new Event(m(loadEnd), Event.Type.LOADED, p,
                 "камера загружена, коксование %.0f мин".formatted(cfg.cokingMin())));
         nextIssue++;
+    }
+
+    /**
+     * Задачи комплекта машин на выдачу печи p, начавшуюся в pushStart: ДСМ снимает
+     * и ставит дверь, КВ выталкивает пирог, ТВ везёт его к башне, УВ загружает камеру.
+     * Порядок коммитов и формулы — один в один жизненный цикл выдачи; метод работает
+     * и с клонами комплекта ({@link #earliestAhead(int)}), поэтому физика планировщика
+     * и симулятора не расходится.
+     *
+     * @param trackWork учитывать работу в статистике занятости (для клонов не нужно)
+     * @return момент окончания загрузки камеры
+     */
+    private double runKit(List<Machine> kit, double[] ready, int p, double pushStart,
+                          double pushDur, boolean trackWork) {
+        double pitch = cfg.pitchM();
+        Machine dm = kit.get(0);
+        Machine kv = kit.get(1);
+        Machine tv = kit.get(2);
+        Machine uv = kit.get(3);
+        double pushEnd = pushStart + pushDur;
+
+        // ДСМ снимает дверь до выталкивания.
+        double doorArrive = dm.readyAt(p, pitch);
+        double doorOffEnd = doorArrive + cfg.doorRemoveMin();
+        double doorApproach = dm.kind.travelMin(dm.pos(), p, pitch) + dm.kind.setupMin;
+        if (trackWork) {
+            dm.addBusy(doorApproach + cfg.doorRemoveMin());
+            dm.addBusyPeriod(doorArrive - doorApproach, doorOffEnd);
+        }
+        dm.commit(p, doorOffEnd);
+
+        // КВ выталкивает пирог и остаётся у печи.
+        double pushApproach = kv.kind.travelMin(kv.pos(), p, pitch) + kv.kind.setupMin;
+        if (trackWork) {
+            kv.addBusy(pushApproach + pushDur);
+            kv.addBusyPeriod(pushStart - pushApproach, pushEnd);
+        }
+        kv.commit(p, pushEnd);
+
+        // ТВ принимает пирог и едет к тушильной башне, затем разгружается.
+        double tower = towerPos();
+        double tvToTower = tv.kind.travelMin(p, tower, pitch);
+        double tvFree = pushEnd + cfg.takeMin() + tvToTower + cfg.unloadMin();
+        double tvApproach = tv.kind.travelMin(tv.pos(), p, pitch) + tv.kind.setupMin;
+        if (trackWork) {
+            // Вагон занят с выезда к печи и до разгрузки у башни: в окно
+            // [pushStart, pushEnd] он стоит под печью и принимает кокс.
+            tv.addBusy(tvApproach + cfg.pushMin() + cfg.takeMin() + tvToTower + cfg.unloadMin());
+            tv.addBusyPeriod(pushStart - tvApproach, pushEnd);
+            tv.addBusyPeriod(pushEnd, tvFree);
+        }
+        tv.commit(tower, tvFree);
+
+        // УВ берёт шихту у угольной башни и загружает камеру (не раньше конца своего простоя).
+        double uvToTower = uv.kind.travelMin(uv.pos(), tower, pitch);
+        double uvToOven = uv.kind.travelMin(tower, p, pitch);
+        double loadStart = Math.max(pushEnd,
+                uv.availableAt() + uvToTower + uv.kind.setupMin
+                        + uvToOven + uv.kind.setupMin);
+        double loadEnd = loadStart + cfg.loadMin();
+        double uvApproach = uvToTower + uvToOven + 2 * uv.kind.setupMin;
+        if (trackWork) {
+            uv.addBusy(uvApproach + cfg.loadMin());
+            uv.addBusyPeriod(loadStart - uvApproach, loadEnd);
+        }
+        uv.commit(p, loadEnd);
+
+        // ДСМ возвращается и ставит дверь после загрузки.
+        double doorOnStart = Math.max(loadEnd, dm.readyAt(p, pitch));
+        double doorOnEnd = doorOnStart + cfg.doorInstallMin();
+        if (trackWork) {
+            dm.addBusy(dm.kind.setupMin + cfg.doorInstallMin());
+            dm.addBusyPeriod(doorOnStart, doorOnEnd);
+        }
+        dm.commit(p, doorOnEnd);
+
+        // Печь: коксование начинается с конца загрузки.
+        ready[p] = loadEnd + cfg.cokingMin();
+        return loadEnd;
+    }
+
+    /** Копия комплекта машин для расчётов без воздействия на живой прогон. */
+    private List<Machine> clonedKit() {
+        List<Machine> clones = new ArrayList<>(4);
+        for (Machine mch : machines()) {
+            Machine clone = new Machine(mch.kind, mch.name, mch.pos());
+            clone.restoreState(mch.exportState());
+            clones.add(clone);
+        }
+        return clones;
     }
 
     // --- отказы обогрева ---
@@ -444,6 +520,8 @@ public final class Simulator {
     /** Экспоненциальное время до следующего отказа обогрева. */
     private double sampleHeatFault(double from) {
         double hours = -Math.log(1 - nextRandom()) / cfg.ovenFaultPerHour();
+        if (!Double.isFinite(hours))
+            return from + FAR;                  // отказы выключены: следующий отказ за горизонтом
         return from + hours * 60;
     }
 
@@ -765,6 +843,12 @@ public final class Simulator {
     /** Утилизация машины: доля времени в переездах и операциях. */
     private double util(Machine mch) {
         return simMin == 0 ? 0 : Math.min(1.0, mch.busyMinutesUntil(simMin) / simMin);
+    }
+
+    /** Занятость машины в окне [fromMin, toMin]: переезды и операции, мин. */
+    public double machineBusyMin(MachineKind kind, double fromMin, double toMin) {
+        Machine mch = machine(kind);
+        return Math.max(0, mch.busyMinutesUntil(toMin) - mch.busyMinutesUntil(fromMin));
     }
 
     /** Срез состояния машины. */
