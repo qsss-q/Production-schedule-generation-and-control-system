@@ -29,4 +29,11 @@ application {
 tasks.test {
     useJUnitPlatform()
     testLogging { showStandardStreams = false }
+    // ручной эксперимент слайдов (ExperimentRunner): запускается с -Pexperiment=1
+    // или -Dexperiment=1 (обе формы доходят до тестовой JVM как системное свойство)
+    val experimentFlag = project.findProperty("experiment")?.toString()
+        ?: System.getProperty("experiment")
+    if (experimentFlag != null) {
+        systemProperty("experiment", experimentFlag)
+    }
 }
