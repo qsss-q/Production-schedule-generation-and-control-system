@@ -37,9 +37,10 @@ const CHIP_OFF = 'border border-red-200 bg-red-50 text-red-600 hover:bg-red-100'
 export default function LeftPanel({ ovens = [] }) {
   const [step, setStep] = useState(15);
   const [algorithm, setAlgorithm] = useState('b1_fifo');
+  const [defaultPriority, setDefaultPriority] = useState(1);
   const [scheme, setScheme] = useState('9-2');
   const [shiftText, setShiftText] = useState('Окно смены 08:00 – 20:00');
-  const [idleText, setIdleText] = useState('Макс. простой до срыва 30 мин');
+  const [idleText, setIdleText] = useState('Порог просрочки до срыва графика 30 мин');
 
   // данные из БД
   const [settings, setSettings] = useState(null);
@@ -61,12 +62,13 @@ export default function LeftPanel({ ovens = [] }) {
         if (!alive) return;
         setSettings(s);
         if (s.stepMinutes != null) setStep(s.stepMinutes);
+        if (s.defaultPriority != null) setDefaultPriority(s.defaultPriority);
         const mapped = { FIFO: 'b1_fifo', IDLE_OPTIMIZATION: 'b2_idle', SMOOTH: 'b3_smooth' }[s.algorithm];
         if (mapped) setAlgorithm(mapped);
         if (s.shiftStart && s.shiftEnd) {
           setShiftText(`Окно смены ${String(s.shiftStart).slice(0, 5)} – ${String(s.shiftEnd).slice(0, 5)}`);
         }
-        if (s.maxIdleMinutes != null) setIdleText(`Макс. простой до срыва ${s.maxIdleMinutes} мин`);
+        if (s.maxIdleMinutes != null) setIdleText(`Порог просрочки до срыва графика ${s.maxIdleMinutes} мин`);
       })
       .catch((e) => alive && setDbError(e.message));
     getEquipment()
@@ -124,6 +126,7 @@ export default function LeftPanel({ ovens = [] }) {
           shiftStart: win ? `${win[1].padStart(2, '0')}:${win[2]}` : settings.shiftStart,
           shiftEnd: win ? `${win[3].padStart(2, '0')}:${win[4]}` : settings.shiftEnd,
           maxIdleMinutes: idle ? Number(idle[1]) : settings.maxIdleMinutes,
+          defaultPriority,
         };
         const saved = await saveSettings(settings.id, next);
         if (saved.algorithm !== settings.algorithm) {
@@ -221,6 +224,17 @@ export default function LeftPanel({ ovens = [] }) {
             className="w-full border border-slate-300 rounded-md p-2 text-[13px] bg-white text-slate-700">
             {SCHEMES.map((s) => <option key={s} value={s}>{s} {s === '9-2' ? '· базовая' : ''}</option>)}
           </select>
+        </div>
+
+        <div className="mb-5">
+          <label className="block text-[11px] text-slate-500 mb-1.5 font-medium">Приоритет новых операций</label>
+          <select value={defaultPriority} onChange={(e) => setDefaultPriority(Number(e.target.value))}
+            className="w-full border border-slate-300 rounded-md p-2 text-[13px] bg-white text-slate-700">
+            <option value={1}>1 · Обычный</option>
+            <option value={2}>2 · Высокий</option>
+            <option value={3}>3 · Срочный</option>
+          </select>
+          <div className="text-[10px] text-slate-400 mt-1">Приоритет не нарушает технологическую серийность; он уменьшает допустимое опоздание операции.</div>
         </div>
 
         <div className="mb-5">

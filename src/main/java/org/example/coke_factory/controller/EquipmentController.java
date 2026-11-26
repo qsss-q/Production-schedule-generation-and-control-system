@@ -37,14 +37,18 @@ public class EquipmentController {
     @PostMapping
     public Equipment create(@RequestBody Equipment equipment) {
         equipment.setId(null);
-        return repository.save(equipment);
+        Equipment saved = repository.save(equipment);
+        audit.log("EQUIPMENT_CREATE", "Equipment", saved.getId(), "Добавлено оборудование: " + saved.getName());
+        return saved;
     }
 
     @PutMapping("/{id}")
     public ResponseEntity<Equipment> update(@PathVariable Long id, @RequestBody Equipment equipment) {
         if (!repository.existsById(id)) return ResponseEntity.notFound().build();
         equipment.setId(id);
-        return ResponseEntity.ok(repository.save(equipment));
+        Equipment saved = repository.save(equipment);
+        audit.log("EQUIPMENT_UPDATE", "Equipment", id, "Изменено оборудование: " + saved.getName());
+        return ResponseEntity.ok(saved);
     }
 
     // переключатель доступности: PATCH /api/equipment/3/availability?available=false
@@ -87,7 +91,9 @@ public class EquipmentController {
         return switch (type) {
             case PUSHER -> ru.evraz.koks.sim.MachineKind.PUSHING;
             case QUENCHING_CAR -> ru.evraz.koks.sim.MachineKind.QUENCH_CAR;
-            default -> null;                 // ДСМ и УВ в справочнике пока не заведены
+            case DOOR_MACHINE -> ru.evraz.koks.sim.MachineKind.DOOR_MACHINE;
+            case LOADING_CAR -> ru.evraz.koks.sim.MachineKind.LOADING_CAR;
+            default -> null;
         };
     }
 
@@ -95,6 +101,7 @@ public class EquipmentController {
     public ResponseEntity<Void> delete(@PathVariable Long id) {
         if (!repository.existsById(id)) return ResponseEntity.notFound().build();
         repository.deleteById(id);
+        audit.log("EQUIPMENT_DELETE", "Equipment", id, "Удалено оборудование");
         return ResponseEntity.noContent().build();
     }
 }

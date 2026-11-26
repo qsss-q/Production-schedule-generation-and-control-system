@@ -7,7 +7,9 @@ spring:
     password: ${SPRING_DATASOURCE_PASSWORD:secret}
   jpa:
     hibernate:
-      ddl-auto: create
+      # Не пересоздаём схему при каждом запуске: сохраняем операции, настройки и аудит.
+      # Для промышленного развёртывания заменить update на validate + Flyway-миграции.
+      ddl-auto: update
     show-sql: true
     defer-datasource-initialization: true
   sql:

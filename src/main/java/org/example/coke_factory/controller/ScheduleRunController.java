@@ -73,14 +73,14 @@ public class ScheduleRunController {
 
     // ---------------- импорт справочников и выгрузка результатов ----------------
 
-    /** Импорт справочника печей (docs/04 §2): состав батареи заменяется, симулятор пересобирается. */
+    /** Импорт справочника печей (docs/04 §2): записи обновляются, симулятор пересобирается. */
     @PostMapping(value = "/import/ovens", consumes = "text/csv")
     public ApiResponse<org.example.coke_factory.service.DirectoryCsvService.ImportResult> importOvens(
             @RequestBody String document) {
         return ApiResponse.ok(csv.importOvens(document));
     }
 
-    /** Импорт справочника машин (docs/04 §3): строки failed дают простой в живом прогоне. */
+    /** Импорт справочника машин (docs/04 §3): записи обновляются, failed даёт простой в живом прогоне. */
     @PostMapping(value = "/import/machines", consumes = "text/csv")
     public ApiResponse<org.example.coke_factory.service.DirectoryCsvService.ImportResult> importMachines(
             @RequestBody String document) {

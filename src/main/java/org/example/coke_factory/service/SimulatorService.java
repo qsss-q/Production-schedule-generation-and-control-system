@@ -396,6 +396,10 @@ public class SimulatorService {
     public synchronized double simMin() {
         return sim.simMinutes();
     }
+    /** Нормативный шаг выдачи Δt = T_цикл / N, мин. */
+    public synchronized double deltaMin() {
+        return sim.deltaMin();
+    }
 
     /**
      * Пересобрать батарею под новый справочник печей: новый SimConfig с другим

@@ -13,4 +13,6 @@ public interface NotificationRepository
         extends JpaRepository<Notification, Long>, JpaSpecificationExecutor<Notification> {
 
     List<Notification> findByIsReadFalseOrderByCreatedAtDesc();
+
+    boolean existsByOperationIdAndType(Long operationId, org.example.coke_factory.entity.NotificationType type);
 }

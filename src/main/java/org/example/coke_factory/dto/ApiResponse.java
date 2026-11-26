@@ -1,8 +1,7 @@
 package org.example.coke_factory.dto;
 
 /**
- * Единый конверт ответа для эндпоинтов симулятора (/api/v1/...),
- * как в контракте Вани (docs/08): { success, data, error }.
+ * Конверт ответа для API v1 и унифицированных ошибок REST API: { success, data, error }.
  */
 public record ApiResponse<T>(boolean success, T data, ApiError error) {
 

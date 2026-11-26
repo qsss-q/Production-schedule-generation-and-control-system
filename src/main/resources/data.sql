@@ -33,9 +33,9 @@ WHERE NOT EXISTS (SELECT 1 FROM coke_ovens);
 
 -- НАСТРОЙКИ РАСПИСАНИЯ
 INSERT INTO schedule_settings (name, step_minutes, shift_start, shift_end,
-                               max_idle_minutes, urgent_priority, algorithm, active)
+                               max_idle_minutes, urgent_priority, algorithm, active, default_priority)
 SELECT 'Вариант 2 - оптимизация простоев', 15, TIME '08:00', TIME '20:00',
-       30, 'HIGH', 'IDLE_OPTIMIZATION', true
+       30, 'HIGH', 'IDLE_OPTIMIZATION', true, 1
     WHERE NOT EXISTS (SELECT 1 FROM schedule_settings);
 
 -- ОПЕРАЦИИ ГРАФИКА (на дату симуляции — 5 октября)

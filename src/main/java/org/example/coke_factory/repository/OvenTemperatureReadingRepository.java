@@ -15,6 +15,8 @@ public interface OvenTemperatureReadingRepository extends JpaRepository<OvenTemp
 
     List<OvenTemperatureReading> findByOvenIdOrderByRecordedAtAsc(Long ovenId);
 
+    List<OvenTemperatureReading> findAllByOrderByRecordedAtAsc();
+
     List<OvenTemperatureReading> findByOvenIdAndRecordedAtBetweenOrderByRecordedAtAsc(
             Long ovenId, LocalDateTime from, LocalDateTime to);
 

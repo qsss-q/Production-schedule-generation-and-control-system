@@ -1,7 +1,5 @@
 package org.example.coke_factory.exception;
 
-import org.example.coke_factory.controller.ScheduleRunController;
-import org.example.coke_factory.controller.SimulatorController;
 import org.example.coke_factory.dto.ApiResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -10,10 +8,9 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 /**
- * Ошибки эндпоинтов симулятора и прогонов (/api/v1) в формате конверта
- * { success:false, error }. Остальные контроллеры (/api/...) не затрагивает.
+ * Единый формат ошибок REST API для всех контроллеров.
  */
-@RestControllerAdvice(assignableTypes = {SimulatorController.class, ScheduleRunController.class})
+@RestControllerAdvice
 public class ApiExceptionHandler {
 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -39,6 +36,6 @@ public class ApiExceptionHandler {
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     public ApiResponse<Void> internal(Exception e) {
-        return ApiResponse.fail("INTERNAL_ERROR", e.getMessage());
+        return ApiResponse.fail("INTERNAL_ERROR", "Внутренняя ошибка сервера");
     }
 }

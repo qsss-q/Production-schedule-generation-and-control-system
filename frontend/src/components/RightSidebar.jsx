@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { getAudit } from '../api/client';
+import { getAudit, getUnreadNotifications, markNotificationRead } from '../api/client';
 import { fmtDbTime, fmtTime } from '../utils/format';
 import {
   deviationCardType,
@@ -24,8 +24,27 @@ export default function RightSidebar({ onClose, events = [], state = null }) {
   const [equip, setEquip] = useState('all');        // 'all' или номер печи
   const [period, setPeriod] = useState('480');      // минут симуляции или 'all'
   const [actions, setActions] = useState([]);       // журнал действий оператора (БД)
+  const [notifications, setNotifications] = useState([]);
 
   const nowMin = state?.simMinutes ?? 0;
+
+  // Устойчивые уведомления из БД: переживают перезапуск симулятора и отмечаются прочитанными.
+  useEffect(() => {
+    let alive = true;
+    const load = () => getUnreadNotifications()
+      .then((rows) => alive && setNotifications(rows))
+      .catch(() => {});
+    load();
+    const timer = setInterval(load, 3000);
+    return () => { alive = false; clearInterval(timer); };
+  }, []);
+
+  const markRead = async (id) => {
+    try {
+      await markNotificationRead(id);
+      setNotifications((items) => items.filter((item) => item.id !== id));
+    } catch { /* следующий опрос повторит загрузку */ }
+  };
 
   // Действия оператора: GET /api/audit (обновляем, пока панель открыта)
   useEffect(() => {
@@ -72,12 +91,20 @@ export default function RightSidebar({ onClose, events = [], state = null }) {
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
           <div className="flex justify-between items-center mb-3">
             <h3 className="font-bold text-[13px] text-slate-800">Отклонения</h3>
-            <span className="bg-slate-100 text-slate-500 text-[10px] px-2 py-0.5 rounded-full font-semibold">{deviations.length} новых</span>
+            <span className="bg-slate-100 text-slate-500 text-[10px] px-2 py-0.5 rounded-full font-semibold">{deviations.length + notifications.length} новых</span>
           </div>
           <div className="space-y-2">
-            {deviations.length > 0 ? deviations.map((e, i) => (
+            {notifications.map((n) => (
+              <div key={`db-${n.id}`} className="relative rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-[11px] text-amber-950">
+                <div className="font-bold mb-0.5">{n.title}</div>
+                <div className="opacity-80">{n.message}</div>
+                <button onClick={() => markRead(n.id)} className="mt-1 text-[10px] font-semibold text-blue-700 hover:underline">Отметить прочитанным</button>
+              </div>
+            ))}
+            {deviations.map((e, i) => (
               <DeviationCard key={`${e.simMinutes}-${e.type}-${e.ovenNumber}-${i}`} type={deviationCardType[eventCategory(e)]} title={deviationTitle(e)} desc={deviationText(e)} />
-            )) : (
+            ))}
+            {deviations.length === 0 && notifications.length === 0 && (
               <div className="text-[11px] text-slate-400">За последний час отклонений нет.</div>
             )}
           </div>

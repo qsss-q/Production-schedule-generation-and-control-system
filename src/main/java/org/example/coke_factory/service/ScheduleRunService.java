@@ -4,10 +4,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.coke_factory.entity.OperationStatus;
+import org.example.coke_factory.entity.Notification;
+import org.example.coke_factory.entity.NotificationType;
 import org.example.coke_factory.entity.RunStatus;
 import org.example.coke_factory.entity.ScheduleOperation;
 import org.example.coke_factory.entity.ScheduleRun;
 import org.example.coke_factory.repository.CokeOvenRepository;
+import org.example.coke_factory.repository.NotificationRepository;
 import org.example.coke_factory.repository.ScheduleOperationRepository;
 import org.example.coke_factory.repository.ScheduleRunRepository;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -62,6 +65,7 @@ public class ScheduleRunService {
     private final AuditService audit;
     private final ObjectMapper mapper;
     private final org.example.coke_factory.repository.ScheduleSettingsRepository settings;
+    private final NotificationRepository notifications;
 
     /** Ревизия на момент последнего пересчёта — чтобы ловить новые возмущения. */
     private long lastRevision;
@@ -74,7 +78,11 @@ public class ScheduleRunService {
                                    Integer horizon, Integer holdNotifyMin,
                                    Integer holdAutoSkipMin) { }
 
-    public record ManualEditRequest(String plannedStart, String reason) { }
+    public record ManualEditRequest(String plannedStart, String reason, Integer priority) {
+        public ManualEditRequest(String plannedStart, String reason) {
+            this(plannedStart, reason, null);
+        }
+    }
 
     public record CompareRequest(List<String> algorithmCodes, String seriality,
                                  Double windowMin) { }
@@ -115,17 +123,22 @@ public class ScheduleRunService {
                         ? active.getStepMinutes().doubleValue() : Double.NaN);
         ScheduleRun previous = runs.findTopByStatusOrderByCreatedAtDesc(RunStatus.CALCULATED)
                 .orElse(null);
+        java.util.Set<Integer> inputOvenNumbers = java.util.Arrays.stream(input.ovens()).boxed()
+                .collect(java.util.stream.Collectors.toSet());
         List<ScheduleOperation> manualOps = previous == null ? List.of()
                 : operations.findByRunIdOrderByIdAsc(previous.getId()).stream()
                         .filter(op -> Boolean.TRUE.equals(op.getManual()))
+                        .filter(op -> op.getActualStart() == null)
+                        .filter(op -> op.getOvenNumber() != null && inputOvenNumbers.contains(op.getOvenNumber()))
                         .toList();
         double[] plan = applyManualCarryOver(algo.build(input), input, manualOps);
+        plan = applyShiftWindow(plan, active, input.minIntervalMin());
 
         // офлайн-реплей: копия батареи из того же снимка, тот же seed
         Simulator.BatteryState snapshot = simulator.snapshotState();
         long from = snapshot.simMin();
         long to = Math.max(from + 1, (long) Math.ceil(plan[plan.length - 1]));
-        ReplayOut replayed = replay(snapshot, algo, from, to);
+        ReplayOut replayed = replayPlan(snapshot, plan, from, to);
         Metrics.Result metrics = replayed.metrics();
 
         simulator.applyPlan(plan);
@@ -149,7 +162,9 @@ public class ScheduleRunService {
         }
         run = runs.save(run);
 
-        int created = createOperations(run, plan, input.ovens(), manualOps);
+        int defaultPriority = active == null || active.getDefaultPriority() == null
+                ? 1 : active.getDefaultPriority();
+        int created = createOperations(run, plan, input.ovens(), manualOps, defaultPriority);
         lastRevision = simulator.revision();
 
         audit.log("SCHEDULE_RUN", "ScheduleRun", null,
@@ -208,6 +223,7 @@ public class ScheduleRunService {
             bySlot.put(slotKey(r.ovenNo(), r.plannedMin()), r);
 
         double now = simulator.simMin();
+        double baseLateTolerance = lateToleranceMin();
         List<ScheduleOperation> changed = new ArrayList<>();
         for (ScheduleOperation op : ops) {
             OperationStatus status = op.getStatus();
@@ -217,25 +233,41 @@ public class ScheduleRunService {
             Simulator.DischargeRecord fact = bySlot.get(slotKey(op.getOvenNumber(), plannedMin));
             if (fact != null) {
                 double delay = fact.actualMin() - fact.plannedMin();
-                op.setActualStart(SimulatorService.toPlantTime(fact.actualMin()));
-                op.setActualEnd(SimulatorService.toPlantTime(fact.actualMin() + OPERATION_MINUTES));
-                op.setDeviationMinutes((int) Math.round(delay));
-                if (delay > lateToleranceMin()) {
-                    op.setStatus(OperationStatus.OVERDUE);   // выполнено с опозданием — терминально
-                } else if (now < fact.actualMin() + OPERATION_MINUTES) {
-                    op.setStatus(OperationStatus.IN_PROGRESS); // выдача началась, операция идёт
-                } else {
-                    op.setStatus(OperationStatus.DONE);
+                LocalDateTime actualStart = SimulatorService.toPlantTime(fact.actualMin());
+                LocalDateTime actualEnd = SimulatorService.toPlantTime(fact.actualMin() + OPERATION_MINUTES);
+                // OVERDUE — операция, которая не началась вовремя. Если факт уже есть,
+                // она выполняется или завершена; отклонение сохраняется отдельно.
+                OperationStatus actualStatus = now < fact.actualMin() + OPERATION_MINUTES
+                        ? OperationStatus.IN_PROGRESS : OperationStatus.DONE;
+                int deviation = (int) Math.round(delay);
+                boolean factChanged = !java.util.Objects.equals(op.getActualStart(), actualStart)
+                        || !java.util.Objects.equals(op.getActualEnd(), actualEnd)
+                        || !java.util.Objects.equals(op.getDeviationMinutes(), deviation)
+                        || status != actualStatus;
+                op.setActualStart(actualStart);
+                op.setActualEnd(actualEnd);
+                op.setDeviationMinutes(deviation);
+                op.setStatus(actualStatus);
+                if (delay > lateToleranceMin(op, baseLateTolerance)) {
+                    createDeviationNotification(op, NotificationType.SCHEDULE_BREAK,
+                            "Отклонение графика · П-" + op.getOvenNumber(),
+                            "Фактическое начало позже планового на " + Math.round(delay) + " мин");
                 }
-                changed.add(op);
+                if (factChanged) changed.add(op);
             } else if (op.getOvenNumber() != null && !simulator.ovenAvailable(op.getOvenNumber())) {
                 if (status != OperationStatus.IMPOSSIBLE) {
                     op.setStatus(OperationStatus.IMPOSSIBLE);
+                    createDeviationNotification(op, NotificationType.STOP,
+                            "Операция невозможна · П-" + op.getOvenNumber(),
+                            "Печь выведена из серии или недоступна; требуется решение оператора");
                     changed.add(op);
                 }
-            } else if (now > plannedMin + OPERATION_MINUTES + lateToleranceMin()) {
+            } else if (now > plannedMin + OPERATION_MINUTES + lateToleranceMin(op, baseLateTolerance)) {
                 if (status != OperationStatus.OVERDUE) {
                     op.setStatus(OperationStatus.OVERDUE);
+                    createDeviationNotification(op, NotificationType.SCHEDULE_BREAK,
+                            "Срыв графика · П-" + op.getOvenNumber(),
+                            "Операция не началась в плановое время; превышен допустимый порог опоздания");
                     changed.add(op);
                 }
             } else if (now >= plannedMin && status == OperationStatus.PLANNED) {
@@ -243,7 +275,49 @@ public class ScheduleRunService {
                 changed.add(op);
             }
         }
-        if (!changed.isEmpty()) operations.saveAll(changed);
+        if (!changed.isEmpty()) {
+            operations.saveAll(changed);
+            for (ScheduleOperation op : changed) {
+                audit.log("OPERATION_SYNC", "ScheduleOperation", op.getId(),
+                        "Автоматическое обновление плана/факта: статус " + op.getStatus()
+                                + ", отклонение " + op.getDeviationMinutes() + " мин");
+            }
+        }
+    }
+
+    private void validateManualTimeWindow(LocalDateTime start) {
+        org.example.coke_factory.entity.ScheduleSettings active =
+                settings.findFirstByActiveTrue().orElse(null);
+        if (active == null || active.getShiftStart() == null || active.getShiftEnd() == null) return;
+        LocalDateTime shiftStart = start.toLocalDate().atTime(active.getShiftStart());
+        LocalDateTime shiftEnd = start.toLocalDate().atTime(active.getShiftEnd());
+        if (start.isBefore(shiftStart) || start.plusMinutes(OPERATION_MINUTES).isAfter(shiftEnd)) {
+            throw new IllegalArgumentException("операция должна полностью помещаться в окно смены "
+                    + active.getShiftStart() + "–" + active.getShiftEnd());
+        }
+    }
+
+    /** Порог опоздания уменьшается для более приоритетных операций (1..3). */
+    private static double lateToleranceMin(ScheduleOperation operation, double baseTolerance) {
+        int priority = operation.getPriority() == null ? 1 : Math.max(1, Math.min(3, operation.getPriority()));
+        return baseTolerance / priority;
+    }
+
+    private void createDeviationNotification(ScheduleOperation operation, NotificationType type,
+                                             String title, String message) {
+        if (operation.getId() != null && notifications.existsByOperationIdAndType(operation.getId(), type))
+            return;
+        Notification notification = new Notification();
+        notification.setOperation(operation);
+        if (operation.getOven() != null) {
+            notification.setEquipment(operation.getOven().getEquipment());
+        }
+        notification.setType(type);
+        notification.setTitle(title);
+        notification.setMessage(message);
+        notification.setIsRead(false);
+        notification.setCreatedAt(simulator.simLocalTime());
+        notifications.save(notification);
     }
 
     // ------------------------------------------------------------------
@@ -266,6 +340,7 @@ public class ScheduleRunService {
         LocalDateTime newStart = LocalDateTime.ofInstant(Instant.parse(request.plannedStart()),
                 SimulatorService.PLANT_ZONE).truncatedTo(ChronoUnit.MINUTES);
         double newMin = SimulatorService.simMinutesOf(newStart);
+        validateManualTimeWindow(newStart);
         if (newMin <= simulator.simMin())
             throw new IllegalArgumentException("новое время в прошлом: сейчас %s"
                     .formatted(SimulatorService.toPlantTime(simulator.simMin())));
@@ -275,32 +350,61 @@ public class ScheduleRunService {
         if (!active.getId().equals(op.getRunId()))
             throw new IllegalArgumentException("операция принадлежит архивному прогону");
 
+        if (request.priority() != null && (request.priority() < 1 || request.priority() > 3))
+            throw new IllegalArgumentException("приоритет операции должен быть 1, 2 или 3");
         op.setPlannedStart(newStart);
         op.setPlannedEnd(newStart.plusMinutes(OPERATION_MINUTES));
+        if (request.priority() != null) op.setPriority(request.priority());
         op.setManual(true);
         op.setNote(request.reason().strip());
         operations.save(op);
 
-        applyPlanFromOperations(active);
+        double[] adjustedPlan = applyPlanFromOperations(active);
+        if (adjustedPlan.length > 0) {
+            Simulator.BatteryState snapshot = simulator.snapshotState();
+            long from = snapshot.simMin();
+            long to = Math.max(from + 1, (long) Math.ceil(adjustedPlan[adjustedPlan.length - 1]));
+            ReplayOut replayed = replayPlan(snapshot, adjustedPlan, from, to);
+            active.setMetricsJson(toJson(metricsJson(replayed.metrics(), replayed.skipped(), snapshot)));
+            active.setWindowFromMin(from);
+            active.setWindowToMin(to);
+            runs.save(active);
+        }
         audit.log("MANUAL_SCHEDULE_EDIT", "ScheduleOperation", id,
-                "Перенос выдачи П-%d на %s: %s".formatted(
-                        op.getOvenNumber(), newStart.toLocalTime(), request.reason().strip()));
+                "Перенос выдачи П-%d на %s; приоритет %d: %s".formatted(
+                        op.getOvenNumber(), op.getPlannedStart().toLocalTime(),
+                        op.getPriority(), request.reason().strip()));
         return op;
     }
 
     /** План из текущих будущих операций действующего прогона — в симулятор. */
-    private void applyPlanFromOperations(ScheduleRun run) {
+    private double[] applyPlanFromOperations(ScheduleRun run) {
         double now = simulator.simMin();
         List<ScheduleOperation> future = operations.findByRunIdOrderByIdAsc(run.getId()).stream()
                 .filter(op -> op.getActualStart() == null)
-                .filter(op -> SimulatorService.simMinutesOf(op.getPlannedStart()) >= now - LATE_TOLERANCE_MIN)
-                .sorted(java.util.Comparator.comparing(ScheduleOperation::getPlannedStart))
-                .toList();
-        if (future.isEmpty()) return;
+                .toList(); // ID — исходный порядок серийности; не сортируем по новому времени
+        if (future.isEmpty()) return new double[0];
+
+        org.example.coke_factory.entity.ScheduleSettings active =
+                settings.findFirstByActiveTrue().orElse(null);
+        double configuredStep = active != null && active.getStepMinutes() != null && active.getStepMinutes() > 0
+                ? active.getStepMinutes().doubleValue() : simulator.deltaMin();
+        double minGap = ScheduleInput.forcingFloorMin(configuredStep);
+
         double[] plan = new double[future.size()];
-        for (int i = 0; i < plan.length; i++)
-            plan[i] = Math.max(SimulatorService.simMinutesOf(future.get(i).getPlannedStart()), now);
-        simulator.applyPlan(ScheduleAlgorithm.monotone(plan));
+        for (int i = 0; i < plan.length; i++) {
+            double desired = Math.max(SimulatorService.simMinutesOf(future.get(i).getPlannedStart()), now);
+            plan[i] = i == 0 ? desired : Math.max(desired, plan[i - 1] + minGap);
+        }
+        plan = applyShiftWindow(plan, active, minGap);
+        for (int i = 0; i < future.size(); i++) {
+            LocalDateTime start = SimulatorService.toPlantTime(plan[i]);
+            future.get(i).setPlannedStart(start);
+            future.get(i).setPlannedEnd(start.plusMinutes(OPERATION_MINUTES));
+        }
+        operations.saveAll(future);
+        simulator.applyPlan(plan);
+        return plan;
     }
 
     /**
@@ -312,11 +416,15 @@ public class ScheduleRunService {
                                           List<ScheduleOperation> manualOps) {
         for (ScheduleOperation manual : manualOps) {
             if (manual.getOvenNumber() == null) continue;
-            double wanted = SimulatorService.simMinutesOf(manual.getPlannedStart());
-            if (wanted <= simulator.simMin()) continue;
+            double wanted = Math.max(SimulatorService.simMinutesOf(manual.getPlannedStart()), input.nowMin());
             for (int k = 0; k < input.horizon(); k++) {
-                if (input.ovens()[k] == manual.getOvenNumber() && k > 0) {
-                    plan[k] = Math.max(plan[k - 1], wanted);
+                if (input.ovens()[k] == manual.getOvenNumber()) {
+                    double earliest = k == 0 ? input.nowMin()
+                            : plan[k - 1] + input.minIntervalMin();
+                    plan[k] = Math.max(wanted, earliest);
+                    for (int j = k + 1; j < plan.length; j++) {
+                        plan[j] = Math.max(plan[j], plan[j - 1] + input.minIntervalMin());
+                    }
                     break;
                 }
             }
@@ -324,40 +432,96 @@ public class ScheduleRunService {
         return plan.length == 0 ? plan : ScheduleAlgorithm.monotone(plan);
     }
 
+    /**
+     * Окно смены — жёсткое ограничение для начала операций графика.
+     * Операция длится 30 минут; если она не помещается до конца смены,
+     * переносится на начало следующей смены. Порядок выдач не меняется.
+     */
+    private double[] applyShiftWindow(double[] plan,
+                                      org.example.coke_factory.entity.ScheduleSettings active,
+                                      double minGapMinutes) {
+        if (active == null || active.getShiftStart() == null || active.getShiftEnd() == null
+                || active.getShiftStart().equals(active.getShiftEnd())) return plan;
+
+        java.time.LocalTime shiftStart = active.getShiftStart();
+        java.time.LocalTime shiftEnd = active.getShiftEnd();
+        if (shiftStart.isAfter(shiftEnd)) {
+            throw new IllegalArgumentException("окно смены через полночь пока не поддерживается");
+        }
+
+        LocalDateTime previous = null;
+        for (int i = 0; i < plan.length; i++) {
+            LocalDateTime candidate = SimulatorService.toPlantTime(plan[i]);
+            if (previous != null && candidate.isBefore(previous.plusSeconds(Math.round(minGapMinutes * 60)))) {
+                candidate = previous.plusSeconds(Math.round(minGapMinutes * 60));
+            }
+            LocalDateTime start = candidate.toLocalDate().atTime(shiftStart);
+            LocalDateTime end = candidate.toLocalDate().atTime(shiftEnd);
+            if (candidate.isBefore(start)) {
+                candidate = start;
+            } else if (candidate.plusMinutes(OPERATION_MINUTES).isAfter(end)) {
+                candidate = start.plusDays(1);
+            }
+            // Перенос за границу смены не должен схлопывать несколько операций в один момент.
+            if (previous != null && candidate.isBefore(previous.plusSeconds(Math.round(minGapMinutes * 60)))) {
+                candidate = previous.plusSeconds(Math.round(minGapMinutes * 60));
+                if (candidate.plusMinutes(OPERATION_MINUTES).isAfter(candidate.toLocalDate().atTime(shiftEnd))) {
+                    candidate = candidate.toLocalDate().plusDays(1).atTime(shiftStart);
+                }
+            }
+            previous = candidate;
+            plan[i] = SimulatorService.simMinutesOf(candidate);
+        }
+        return ScheduleAlgorithm.monotone(plan);
+    }
+
     private int createOperations(ScheduleRun run, double[] plan, int[] sliceOvens,
-                                 List<ScheduleOperation> manualOps) {
-        // ручные операции старого прогона переезжают в новый со своим временем
+                                 List<ScheduleOperation> manualOps, int defaultPriority) {
+        // Ручные операции старого прогона переезжают в новый. Для печи с ручной
+        // операцией не создаём вторую автоматическую строку.
         List<ScheduleOperation> created = new ArrayList<>();
+        java.util.Set<Integer> manualOvenNumbers = new java.util.HashSet<>();
         for (ScheduleOperation manual : manualOps) {
+            int index = -1;
+            for (int k = 0; k < sliceOvens.length; k++) {
+                if (manual.getOvenNumber() != null && sliceOvens[k] == manual.getOvenNumber()) {
+                    index = k;
+                    break;
+                }
+            }
+            LocalDateTime adjustedStart = index >= 0
+                    ? SimulatorService.toPlantTime(plan[index]) : manual.getPlannedStart();
             ScheduleOperation copy = new ScheduleOperation();
             copy.setRunId(run.getId());
             copy.setOven(manual.getOven());
             copy.setOvenNumber(manual.getOvenNumber());
             copy.setOperationType(manual.getOperationType());
-            copy.setPlannedStart(manual.getPlannedStart());
-            copy.setPlannedEnd(manual.getPlannedEnd());
+            copy.setPlannedStart(adjustedStart);
+            copy.setPlannedEnd(adjustedStart.plusMinutes(OPERATION_MINUTES));
             copy.setStatus(OperationStatus.PLANNED);
             copy.setPriority(manual.getPriority());
             copy.setManual(true);
             copy.setUrgent(manual.getUrgent());
             copy.setNote(manual.getNote());
             created.add(copy);
+            if (manual.getOvenNumber() != null) manualOvenNumbers.add(manual.getOvenNumber());
         }
 
-        // печи по порядку выдач — тот же срез, по которому строился план
+        // Печи по порядку выдач — тот же срез, по которому строился план.
         for (int k = 0; k < plan.length; k++) {
             final int ovenNumber = sliceOvens[k];
-            final LocalDateTime start = SimulatorService.toPlantTime(plan[k]);
+            if (manualOvenNumbers.contains(ovenNumber)) continue;
+            final LocalDateTime startTime = SimulatorService.toPlantTime(plan[k]);
             ovens.findByNameOven("Печь П-" + ovenNumber).ifPresent(oven -> {
                 ScheduleOperation op = new ScheduleOperation();
                 op.setRunId(run.getId());
                 op.setOven(oven);
                 op.setOvenNumber(ovenNumber);
                 op.setOperationType("PUSHING");
-                op.setPlannedStart(start);
-                op.setPlannedEnd(start.plusMinutes(OPERATION_MINUTES));
+                op.setPlannedStart(startTime);
+                op.setPlannedEnd(startTime.plusMinutes(OPERATION_MINUTES));
                 op.setStatus(OperationStatus.PLANNED);
-                op.setPriority(1);
+                op.setPriority(defaultPriority);
                 op.setManual(false);
                 op.setUrgent(false);
                 created.add(op);
@@ -443,13 +607,30 @@ public class ScheduleRunService {
      * после возмущения. Без этого голая сетка за пределами первого плана бьёт
      * по печам с фазовым долгом и забивает разницу алгоритмов.
      */
+    /** Реплей именно того плана, который будет установлен в живой симулятор. */
+    private ReplayOut replayPlan(Simulator.BatteryState snapshot, double[] plan,
+                                 double from, double to) {
+        Simulator copy = Simulator.restore(snapshot);
+        int skippedBefore = copy.skipped();
+        copy.setPlan(plan);
+        long target = (long) Math.ceil(to);
+        copy.advance(Math.max(1, target - (long) copy.simMinutes()));
+        return new ReplayOut(Metrics.compute(copy, from, to,
+                simulator.toleranceMin(), simulator.cokingMin(), simulator.loadMin()),
+                copy.skipped() - skippedBefore);
+    }
+
     private ReplayOut replay(Simulator.BatteryState snapshot, ScheduleAlgorithm algo,
                              double from, double to) {
         Simulator copy = Simulator.restore(snapshot);
+        org.example.coke_factory.entity.ScheduleSettings active =
+                settings.findFirstByActiveTrue().orElse(null);
         int skippedBefore = copy.skipped();
         while (copy.simMinutes() < to - 1e-9) {
-            ScheduleInput input = ScheduleInput.of(copy, Integer.MAX_VALUE);
-            double[] plan = algo.build(input);
+            ScheduleInput input = ScheduleInput.of(copy, Integer.MAX_VALUE,
+                    active != null && active.getStepMinutes() != null && active.getStepMinutes() > 0
+                            ? active.getStepMinutes().doubleValue() : Double.NaN);
+            double[] plan = applyShiftWindow(algo.build(input), active, input.minIntervalMin());
             copy.setPlan(plan);
             long target = (long) Math.min(Math.ceil(plan[plan.length - 1]), Math.ceil(to));
             copy.advance(Math.max(1, target - (long) copy.simMinutes()));

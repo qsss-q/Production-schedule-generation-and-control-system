@@ -32,6 +32,9 @@ dependencies {
     testAnnotationProcessor("org.projectlombok:lombok")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    // Реальный PostgreSQL в интеграционных тестах (не H2 и не моки)
+    testImplementation("org.testcontainers:junit-jupiter:1.20.4")
+    testImplementation("org.testcontainers:postgresql:1.20.4")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

@@ -76,6 +76,7 @@ export const getRunOperations = (id) => v1(`/schedule-runs/${id}/operations`);
 export const compareRuns = (body) => v1('/schedule-runs/compare', send('POST', body));
 // ручная правка: { plannedStart: ISO, reason } — причина обязательна
 export const manualEditOperation = (id, body) => v1(`/schedule-operations/${id}`, send('PATCH', body));
+export const setOperationPriority = (id, priority) => db(`/operations/${id}/priority?priority=${priority}`, { method: 'PATCH' });
 
 // доступность: печь — вывод из серии (слот пропускается), машина — простой
 export const setOvenAvailability = (number, available, reason) =>
@@ -133,4 +134,6 @@ export const getActiveSettings = () => db('/settings/active');
 export const saveSettings = (id, settings) => db(`/settings/${id}`, send('PUT', settings));
 
 export const getAudit = () => db('/audit');
+export const getUnreadNotifications = () => db('/notifications/unread');
+export const markNotificationRead = (id) => db(`/notifications/${id}/read`, { method: 'PATCH' });
 export const getTemperature = (ovenNumber) => db(`/temperature/by-oven-number/${ovenNumber}`);

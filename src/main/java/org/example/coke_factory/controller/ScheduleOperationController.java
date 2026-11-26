@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import org.example.coke_factory.entity.OperationStatus;
 import org.example.coke_factory.entity.ScheduleOperation;
 import org.example.coke_factory.repository.ScheduleOperationRepository;
+import org.example.coke_factory.service.AuditService;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -17,6 +18,7 @@ import java.util.List;
 public class ScheduleOperationController {
 
     private final ScheduleOperationRepository repository;
+    private final AuditService audit;
 
     @GetMapping
     public List<ScheduleOperation> getAll(
@@ -57,16 +59,22 @@ public class ScheduleOperationController {
 
     @PostMapping
     public ScheduleOperation create(@RequestBody ScheduleOperation operation) {
+        validatePriority(operation.getPriority());
         operation.setId(null);
-        return repository.save(operation);
+        ScheduleOperation saved = repository.save(operation);
+        audit.log("OPERATION_CREATE", "ScheduleOperation", saved.getId(), "Создана операция графика");
+        return saved;
     }
 
     @PutMapping("/{id}")
     public ResponseEntity<ScheduleOperation> update(@PathVariable Long id,
                                                     @RequestBody ScheduleOperation operation) {
         if (!repository.existsById(id)) return ResponseEntity.notFound().build();
+        validatePriority(operation.getPriority());
         operation.setId(id);
-        return ResponseEntity.ok(repository.save(operation));
+        ScheduleOperation saved = repository.save(operation);
+        audit.log("OPERATION_UPDATE", "ScheduleOperation", id, "Изменена операция графика");
+        return ResponseEntity.ok(saved);
     }
 
     // быстро сменить статус (запланировано -> выполняется и т. д.)
@@ -76,7 +84,9 @@ public class ScheduleOperationController {
         return repository.findById(id)
                 .map(op -> {
                     op.setStatus(status);
-                    return ResponseEntity.ok(repository.save(op));
+                    ScheduleOperation saved = repository.save(op);
+                    audit.log("OPERATION_STATUS", "ScheduleOperation", id, "Статус операции изменён на " + status);
+                    return ResponseEntity.ok(saved);
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
@@ -85,7 +95,27 @@ public class ScheduleOperationController {
     public ResponseEntity<Void> delete(@PathVariable Long id) {
         if (!repository.existsById(id)) return ResponseEntity.notFound().build();
         repository.deleteById(id);
+        audit.log("OPERATION_DELETE", "ScheduleOperation", id, "Удалена операция графика");
         return ResponseEntity.noContent().build();
+    }
+
+    /** Изменить приоритет операции: 1 — обычный, 2 — высокий, 3 — срочный. */
+    @PatchMapping("/{id}/priority")
+    public ResponseEntity<ScheduleOperation> changePriority(@PathVariable Long id,
+                                                            @RequestParam int priority) {
+        validatePriority(priority);
+        return repository.findById(id).map(op -> {
+            op.setPriority(priority);
+            ScheduleOperation saved = repository.save(op);
+            audit.log("OPERATION_PRIORITY", "ScheduleOperation", id,
+                    "Приоритет операции изменён на " + priority);
+            return ResponseEntity.ok(saved);
+        }).orElse(ResponseEntity.notFound().build());
+    }
+
+    private static void validatePriority(Integer priority) {
+        if (priority == null || priority < 1 || priority > 3)
+            throw new IllegalArgumentException("приоритет операции должен быть 1, 2 или 3");
     }
 
     // лента ближайших событий: /api/operations/upcoming  или  ?from=2026-10-05T11:10:00

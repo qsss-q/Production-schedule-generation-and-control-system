@@ -6,9 +6,13 @@ import org.example.coke_factory.entity.OperationStatus;
 import org.example.coke_factory.entity.RunStatus;
 import org.example.coke_factory.entity.ScheduleOperation;
 import org.example.coke_factory.entity.ScheduleRun;
+import org.example.coke_factory.entity.ScheduleSettings;
+import org.example.coke_factory.entity.Notification;
 import org.example.coke_factory.repository.CokeOvenRepository;
 import org.example.coke_factory.repository.ScheduleOperationRepository;
 import org.example.coke_factory.repository.ScheduleRunRepository;
+import org.example.coke_factory.repository.ScheduleSettingsRepository;
+import org.example.coke_factory.repository.NotificationRepository;
 import org.example.coke_factory.service.ScheduleRunService.CompareRequest;
 import org.example.coke_factory.service.ScheduleRunService.CompareResult;
 import org.example.coke_factory.service.ScheduleRunService.CreateRunRequest;
@@ -19,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentMatchers;
 
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -46,6 +51,8 @@ class ScheduleRunServiceTest {
     private SimulatorService simulator;
     private ScheduleRunService service;
     private AuditService audit;
+    private ScheduleSettingsRepository settingsRepository;
+    private NotificationRepository notificationRepository;
     private final Map<String, ScheduleRun> runStore = new HashMap<>();
     private final List<String> runOrder = new ArrayList<>();
     private final List<ScheduleOperation> opStore = new ArrayList<>();
@@ -90,7 +97,15 @@ class ScheduleRunServiceTest {
             List<ScheduleOperation> saved = new ArrayList<>();
             ops.forEach(op -> {
                 if (op.getId() == null) op.setId((long) (opStore.size() + 1));
-                opStore.add(op);
+                int existingIndex = -1;
+                for (int i = 0; i < opStore.size(); i++) {
+                    if (opStore.get(i).getId().equals(op.getId())) {
+                        existingIndex = i;
+                        break;
+                    }
+                }
+                if (existingIndex >= 0) opStore.set(existingIndex, op);
+                else opStore.add(op);
                 saved.add(op);
             });
             return saved;
@@ -113,9 +128,35 @@ class ScheduleRunServiceTest {
             return Optional.of(oven);
         });
 
+        settingsRepository = mock(ScheduleSettingsRepository.class);
+        notificationRepository = mock(NotificationRepository.class);
         service = new ScheduleRunService(simulator, runRepo, opRepo, ovenRepo, audit,
-                new ObjectMapper(),
-                mock(org.example.coke_factory.repository.ScheduleSettingsRepository.class));
+                new ObjectMapper(), settingsRepository, notificationRepository);
+    }
+
+    @Test
+    void settingsApplyShiftWindowAndDefaultPriority() {
+        ScheduleSettings active = new ScheduleSettings();
+        active.setActive(true);
+        active.setStepMinutes(15);
+        active.setShiftStart(LocalTime.of(8, 0));
+        active.setShiftEnd(LocalTime.of(20, 0));
+        active.setMaxIdleMinutes(30);
+        active.setDefaultPriority(3);
+        when(settingsRepository.findFirstByActiveTrue()).thenReturn(Optional.of(active));
+
+        RunDto run = service.createRun(new CreateRunRequest("b1_fifo", null, null, null, null, null),
+                "тест смены и приоритета");
+
+        List<ScheduleOperation> generated = opStore.stream()
+                .filter(op -> run.id().equals(op.getRunId()))
+                .toList();
+        assertThat(generated).isNotEmpty().allMatch(op -> op.getPriority() == 3);
+        assertThat(generated).allSatisfy(op -> {
+            assertThat(op.getPlannedStart().toLocalTime()).isBetween(
+                    LocalTime.of(8, 0), LocalTime.of(19, 30));
+            assertThat(op.getPlannedEnd().toLocalTime()).isBeforeOrEqualTo(LocalTime.of(20, 0));
+        });
     }
 
     @Test
@@ -180,6 +221,7 @@ class ScheduleRunServiceTest {
                 .toList();
         assertThat(ops).anySatisfy(op ->
                 assertThat(op.getStatus()).isEqualTo(OperationStatus.IMPOSSIBLE));
+        verify(notificationRepository, atLeastOnce()).save(any(Notification.class));
     }
 
     @Test
@@ -197,11 +239,15 @@ class ScheduleRunServiceTest {
         var newTime = SimulatorService.toPlantTime(simulator.simMin() + 120);
         ScheduleOperation edited = service.manualEdit(op.getId(), new ManualEditRequest(
                 newTime.atZone(SimulatorService.PLANT_ZONE).toInstant().toString(),
-                "перенос по согласованию с мастером"));
+                "перенос по согласованию с мастером", 3));
 
         assertThat(edited.getManual()).isTrue();
         assertThat(edited.getNote()).contains("мастером");
         assertThat(edited.getPlannedStart()).isEqualTo(newTime);
+        assertThat(edited.getPriority()).isEqualTo(3);
+        // Следующие операции сдвигаются, но порядок серийности по ID сохраняется.
+        ScheduleOperation following = opStore.get(6);
+        assertThat(following.getPlannedStart()).isAfter(edited.getPlannedStart());
         // план симулятора сдвинут: выдача этой печи назначена не раньше нового времени
         var ops = opStore.stream()
                 .filter(o -> !Boolean.TRUE.equals(o.getManual()) && o.getActualStart() == null)
@@ -234,6 +280,11 @@ class ScheduleRunServiceTest {
         assertThat(carried).hasSize(1);
         assertThat(carried.get(0).getOvenNumber()).isEqualTo(op.getOvenNumber());
         assertThat(carried.get(0).getPlannedStart()).isEqualTo(newTime);
+        assertThat(opStore.stream()
+                .filter(o -> second.id().equals(o.getRunId()))
+                .filter(o -> !Boolean.TRUE.equals(o.getManual()))
+                .filter(o -> op.getOvenNumber().equals(o.getOvenNumber()))
+                .toList()).isEmpty();
         // печь в плане нового прогона не раньше ручного времени
         int idx = -1;
         var slice = simulator.planInput(Integer.MAX_VALUE);

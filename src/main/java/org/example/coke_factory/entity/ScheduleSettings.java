@@ -32,7 +32,7 @@ public class ScheduleSettings {
     @Column(name = "shift_end")
     private LocalTime shiftEnd;
 
-    // максимальный простой до срыва, минуты
+    // порог опоздания до статуса OVERDUE, минуты (делится на приоритет операции)
     @Column(name = "max_idle_minutes")
     private Integer maxIdleMinutes;
 
@@ -43,6 +43,10 @@ public class ScheduleSettings {
     // алгоритм: "FIFO" (B1), "IDLE_OPTIMIZATION" (B2), "SMOOTH" (B3);
     // значение "URGENT_FIRST" выведено из употребления — см. docs/10 §6.2
     private String algorithm;
+
+    // приоритет по умолчанию для новых операций: 1 — обычный, 2 — высокий, 3 — срочный
+    @Column(name = "default_priority")
+    private Integer defaultPriority = 1;
 
     // какие настройки сейчас применены
     private Boolean active = false;
