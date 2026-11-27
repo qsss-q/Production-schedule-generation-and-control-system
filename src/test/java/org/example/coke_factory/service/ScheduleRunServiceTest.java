@@ -220,45 +220,50 @@ class ScheduleRunServiceTest {
     }
 
     @Test
-    void excludedOven_operationBecomesImpossible_andRunRecalculates() {
-        service.createRun(new CreateRunRequest("b1_fifo", null, null, null, null, null), "тест");
+    void excludedOven_marksOnlyItsOperationImpossible_withoutRecalculatingRun() {
+        RunDto created = service.createRun(new CreateRunRequest("b1_fifo", null, null, null, null, null), "тест");
         int before = runStore.size();
+        List<ScheduleOperation> original = opStore.stream()
+                .filter(op -> created.id().equals(op.getRunId())).toList();
+        Map<Long, LocalDateTime> originalTimes = original.stream().collect(
+                java.util.stream.Collectors.toMap(ScheduleOperation::getId, ScheduleOperation::getPlannedStart));
 
-        simulator.setOvenAvailable(7, false, "ремонт кладки");   // возмущение
-        service.syncTick();                                     // пересчёт по ревизии
+        simulator.setOvenAvailable(7, false, "ремонт кладки");
+        service.syncTick();
 
-        assertThat(runStore.size()).isGreaterThan(before);
-        // старый прогон в архиве, новый ссылается на него
-        long archived = runStore.values().stream()
-                .filter(r -> r.getStatus() == RunStatus.ARCHIVED).count();
-        assertThat(archived).isEqualTo(1);
-        var active = runStore.values().stream()
-                .filter(r -> r.getStatus() == RunStatus.CALCULATED).reduce((a, b) -> b).orElseThrow();
-        assertThat(active.getParentId()).isNotNull();
-        assertThat(active.getReason()).contains("пересчёт");
-        // операция выведенной печи в новом прогоне — невозможно выполнить
-        var ops = opStore.stream()
-                .filter(op -> active.getId().equals(op.getRunId()))
-                .filter(op -> Integer.valueOf(7).equals(op.getOvenNumber()))
-                .toList();
-        assertThat(ops).anySatisfy(op ->
+        assertThat(runStore).hasSize(before);
+        assertThat(runStore.get(created.id()).getStatus()).isEqualTo(RunStatus.CALCULATED);
+        assertThat(opStore.stream().filter(op -> created.id().equals(op.getRunId())))
+                .allSatisfy(op -> assertThat(op.getPlannedStart()).isEqualTo(originalTimes.get(op.getId())));
+        var excluded = opStore.stream()
+                .filter(op -> created.id().equals(op.getRunId()))
+                .filter(op -> Integer.valueOf(7).equals(op.getOvenNumber())).toList();
+        assertThat(excluded).anySatisfy(op ->
                 assertThat(op.getStatus()).isEqualTo(OperationStatus.IMPOSSIBLE));
         verify(notificationRepository, atLeastOnce()).save(any(Notification.class));
+
+        simulator.setOvenAvailable(7, true, "ремонт завершён");
+        service.syncTick();
+        assertThat(excluded).allSatisfy(op -> assertThat(op.getStatus())
+                .isNotEqualTo(OperationStatus.IMPOSSIBLE));
+        assertThat(runStore).hasSize(before);
     }
 
     @Test
     void manualEdit_requiresReason_andMovesDischarge() {
         service.createRun(new CreateRunRequest("b1_fifo", null, null, null, null, null), "тест");
-        ScheduleOperation op = opStore.get(5);
+        ScheduleOperation op = opStore.get(opStore.size() - 1);
         assertThat(op.getStatus()).isEqualTo(OperationStatus.PLANNED);
+        Map<Long, LocalDateTime> beforeTimes = opStore.stream()
+                .filter(o -> op.getRunId().equals(o.getRunId()))
+                .collect(java.util.stream.Collectors.toMap(ScheduleOperation::getId, ScheduleOperation::getPlannedStart));
 
         assertThatThrownBy(() -> service.manualEdit(op.getId(), new ManualEditRequest(null, null)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("причина");
 
-        // текущее модельное время + 2 часа, по часам предприятия
         simulator.control(new SimulatorService.ControlRequest("step", 10L));
-        var newTime = SimulatorService.toPlantTime(simulator.simMin() + 120);
+        var newTime = op.getPlannedStart().plusMinutes(120);
         ScheduleOperation edited = service.manualEdit(op.getId(), new ManualEditRequest(
                 newTime.atZone(SimulatorService.PLANT_ZONE).toInstant().toString(),
                 "перенос по согласованию с мастером", 3));
@@ -267,14 +272,9 @@ class ScheduleRunServiceTest {
         assertThat(edited.getNote()).contains("мастером");
         assertThat(edited.getPlannedStart()).isEqualTo(newTime);
         assertThat(edited.getPriority()).isEqualTo(3);
-        // Следующие операции сдвигаются, но порядок серийности по ID сохраняется.
-        ScheduleOperation following = opStore.get(6);
-        assertThat(following.getPlannedStart()).isAfter(edited.getPlannedStart());
-        // план симулятора сдвинут: выдача этой печи назначена не раньше нового времени
-        var ops = opStore.stream()
-                .filter(o -> !Boolean.TRUE.equals(o.getManual()) && o.getActualStart() == null)
-                .toList();
-        assertThat(ops).isNotEmpty();
+        // Все остальные операции сохраняют свои плановые времена.
+        assertThat(opStore.stream().filter(o -> beforeTimes.containsKey(o.getId()) && !o.getId().equals(op.getId())))
+                .allSatisfy(o -> assertThat(o.getPlannedStart()).isEqualTo(beforeTimes.get(o.getId())));
         verify(audit, atLeastOnce()).log(contains("MANUAL_SCHEDULE_EDIT"), any(), any(), any());
     }
 

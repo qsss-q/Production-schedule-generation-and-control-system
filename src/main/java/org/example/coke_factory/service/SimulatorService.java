@@ -247,13 +247,16 @@ public class SimulatorService {
             seriality = r.seriality().strip();
         }
 
-        boolean rebuild = r.seed() != null || r.pushJamProb() != null
-                || r.ovenFaultPerHour() != null || r.seriality() != null;
+        double jam = r.pushJamProb() != null
+                ? Math.max(0, Math.min(1, r.pushJamProb())) : config.pushJamProb();
+        double heat = r.ovenFaultPerHour() != null
+                ? Math.max(0, r.ovenFaultPerHour()) : config.ovenFaultPerHour();
+        long seed = r.seed() != null ? r.seed() : config.seed();
+        boolean rebuild = !seriality.equals(config.seriality())
+                || Double.compare(jam, config.pushJamProb()) != 0
+                || Double.compare(heat, config.ovenFaultPerHour()) != 0
+                || seed != config.seed();
         if (rebuild) {
-            double jam = r.pushJamProb() != null
-                    ? Math.max(0, Math.min(1, r.pushJamProb())) : config.pushJamProb();
-            double heat = r.ovenFaultPerHour() != null
-                    ? Math.max(0, r.ovenFaultPerHour()) : config.ovenFaultPerHour();
             // SimConfig неизменяемый, поэтому собираем новый и пересоздаём симулятор
             config = new SimConfig(
                     config.ovenCount(), seriality, config.cycleMin(),
@@ -262,7 +265,7 @@ public class SimulatorService {
                     jam, config.pushJamRepairMin(), config.takeMin(), config.unloadMin(),
                     config.loadMin(), config.towerDistanceM(), heat,
                     config.ovenFaultRepairMin(),
-                    r.seed() != null ? r.seed() : config.seed());
+                    seed);
             sim = new Simulator(config);
             generation++;
             running = false;

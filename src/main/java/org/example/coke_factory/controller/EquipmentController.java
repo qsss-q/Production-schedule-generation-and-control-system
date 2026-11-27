@@ -24,14 +24,42 @@ public class EquipmentController {
     // все оборудование или только одного типа: /api/equipment?type=PUSHER
     @GetMapping
     public List<Equipment> getAll(@RequestParam(required = false) EquipmentType type) {
-        return type == null ? repository.findAll() : repository.findByType(type);
+        List<Equipment> items = type == null ? repository.findAll() : repository.findByType(type);
+        // Доступность — состояние живого симулятора, а не сохранённый флаг из
+        // предыдущего запуска приложения. После перезапуска симулятор создаётся
+        // заново, поэтому отдаём актуальное состояние его печей и машин.
+        return items.stream().map(this::withLiveAvailability).toList();
     }
 
     @GetMapping("/{id}")
     public ResponseEntity<Equipment> getById(@PathVariable Long id) {
         return repository.findById(id)
+                .map(this::withLiveAvailability)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    /** Накладывает фактическую доступность текущего симулятора на DTO сущности. */
+    private Equipment withLiveAvailability(Equipment equipment) {
+        Boolean live = liveAvailability(equipment);
+        if (live != null) equipment.setAvailable(live);
+        return equipment;
+    }
+
+    /** null означает, что тип/имя оборудования не связано с моделью симулятора. */
+    private Boolean liveAvailability(Equipment equipment) {
+        if (equipment.getType() == null) return null;
+        String name = equipment.getName() == null ? "" : equipment.getName();
+        if (equipment.getType() == EquipmentType.OVEN && name.startsWith("Печь П-")) {
+            try {
+                return simulator.ovenAvailable(
+                        Integer.parseInt(name.substring("Печь П-".length())));
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        ru.evraz.koks.sim.MachineKind kind = machineKind(equipment.getType());
+        return kind == null ? null : !simulator.machineDown(kind);
     }
 
     @PostMapping
@@ -61,10 +89,11 @@ public class EquipmentController {
                 .map(e -> {
                     e.setAvailable(available);
                     Equipment saved = repository.save(e);
-                    applyToSimulator(e, available);
+                    applyToSimulator(saved, available);
                     audit.log("EQUIPMENT_AVAILABILITY", "Equipment", id,
-                            "%s: %s".formatted(e.getName(), available ? "доступно" : "выведено"));
-                    return ResponseEntity.ok(saved);
+                            "%s: %s".formatted(saved.getName(), available ? "доступно" : "выведено"));
+                    // Ответ должен отражать состояние после команды, а не старый флаг БД.
+                    return ResponseEntity.ok(withLiveAvailability(saved));
                 })
                 .orElse(ResponseEntity.notFound().build());
     }

@@ -84,6 +84,75 @@ class ApiControllerContractTest {
         verify(equipment).findByType(EquipmentType.PUSHER);
     }
 
+
+    @Test
+    void equipmentDirectoryUsesLiveSimulatorAvailabilityInsteadOfStaleDatabaseFlag() throws Exception {
+        Equipment pusher = new Equipment();
+        pusher.setId(10L);
+        pusher.setName("Выталкиватель КВ-1");
+        pusher.setType(EquipmentType.PUSHER);
+        pusher.setAvailable(false); // устаревшее значение, сохранённое в БД
+        when(equipment.findAll()).thenReturn(List.of(pusher));
+        when(simulator.machineDown(ru.evraz.koks.sim.MachineKind.PUSHING)).thenReturn(false);
+
+        mvc.perform(get("/api/equipment"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].available").value(true));
+        verify(simulator).machineDown(ru.evraz.koks.sim.MachineKind.PUSHING);
+    }
+
+    @Test
+    void equipmentDirectoryShowsMachineUnavailableWhenLiveSimulatorIsDown() throws Exception {
+        Equipment pusher = new Equipment();
+        pusher.setId(10L);
+        pusher.setName("Выталкиватель КВ-1");
+        pusher.setType(EquipmentType.PUSHER);
+        pusher.setAvailable(true);
+        when(equipment.findAll()).thenReturn(List.of(pusher));
+        when(simulator.machineDown(ru.evraz.koks.sim.MachineKind.PUSHING)).thenReturn(true);
+
+        mvc.perform(get("/api/equipment"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].available").value(false));
+    }
+
+    @Test
+    void equipmentAvailabilityPatchTakesMachineDownAndReturnsLiveState() throws Exception {
+        Equipment pusher = new Equipment();
+        pusher.setId(10L);
+        pusher.setName("Выталкиватель КВ-1");
+        pusher.setType(EquipmentType.PUSHER);
+        pusher.setAvailable(true);
+        when(equipment.findById(10L)).thenReturn(Optional.of(pusher));
+        when(equipment.save(any(Equipment.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(simulator.machineDown(ru.evraz.koks.sim.MachineKind.PUSHING)).thenReturn(true);
+
+        mvc.perform(patch("/api/equipment/10/availability").param("available", "false"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.available").value(false));
+
+        verify(simulator).setMachineDown(ru.evraz.koks.sim.MachineKind.PUSHING, 0);
+        verify(equipment).save(argThat(saved -> Boolean.FALSE.equals(saved.getAvailable())));
+    }
+
+    @Test
+    void equipmentAvailabilityPatchRestoresMachine() throws Exception {
+        Equipment pusher = new Equipment();
+        pusher.setId(10L);
+        pusher.setName("Выталкиватель КВ-1");
+        pusher.setType(EquipmentType.PUSHER);
+        pusher.setAvailable(false);
+        when(equipment.findById(10L)).thenReturn(Optional.of(pusher));
+        when(equipment.save(any(Equipment.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(simulator.machineDown(ru.evraz.koks.sim.MachineKind.PUSHING)).thenReturn(false);
+
+        mvc.perform(patch("/api/equipment/10/availability").param("available", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.available").value(true));
+
+        verify(simulator).setMachineUp(ru.evraz.koks.sim.MachineKind.PUSHING);
+    }
+
     @Test
     void ovenEndpoints_returnListAndNotFound() throws Exception {
         mvc.perform(get("/api/ovens")).andExpect(status().isOk()).andExpect(content().json("[]"));

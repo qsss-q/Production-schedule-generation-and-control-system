@@ -5,13 +5,15 @@ import {
   getActiveRun,
   getActiveSettings,
   getEquipment,
+  getMachines,
+  machineDown,
+  machineUp,
   importMachinesCsv,
   importOvensCsv,
   importStateFile,
   logOperatorAction,
   runExportCsvUrl,
   saveSettings,
-  setEquipmentAvailability,
   setOvenAvailability,
   stateExportUrl,
 } from '../api/client';
@@ -25,10 +27,10 @@ const ALGORITHMS = [
 const SCHEMES = ['2-1', '5-2', '9-2'];
 // Машины комплекта: машинный код для /api/v1/machines/{code}/* и подпись.
 const MACHINE_CHIPS = [
-  { code: 'PUSHING', label: 'КВ', title: 'Коксовыталкиватель' },
-  { code: 'DOOR_MACHINE', label: 'ДСМ', title: 'Двересъёмная машина' },
-  { code: 'QUENCH_CAR', label: 'ТВ', title: 'Тушильный вагон' },
-  { code: 'LOADING_CAR', label: 'УВ', title: 'Углезагрузочный вагон' },
+  { code: 'КВ', type: 'PUSHER', label: 'КВ', title: 'Коксовыталкиватель' },
+  { code: 'ДСМ', type: 'DOOR_MACHINE', label: 'ДСМ', title: 'Двересъёмная машина' },
+  { code: 'ТВ', type: 'QUENCHING_CAR', label: 'ТВ', title: 'Тушильный вагон' },
+  { code: 'УВ', type: 'LOADING_CAR', label: 'УВ', title: 'Углезагрузочный вагон' },
 ];
 
 const CHIP_OK = 'border border-[#10B981]/30 bg-[#10B981]/10 text-[#059669] hover:bg-[#10B981]/20';
@@ -45,6 +47,7 @@ export default function LeftPanel({ ovens = [] }) {
   // данные из БД
   const [settings, setSettings] = useState(null);
   const [equipment, setEquipment] = useState([]);
+  const [machineUnavailable, setMachineUnavailable] = useState({});
   const [dbError, setDbError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -74,27 +77,41 @@ export default function LeftPanel({ ovens = [] }) {
     getEquipment()
       .then((list) => alive && setEquipment(list))
       .catch((e) => alive && setDbError(e.message));
+    getMachines()
+      .then((list) => {
+        if (!alive) return;
+        setMachineUnavailable(Object.fromEntries(list.map((machine) => [machine.code, Boolean(machine.down)])));
+      })
+      .catch((e) => alive && setMessage(`Не удалось получить состояние машин: ${e.message}`));
     return () => { alive = false; };
   }, []);
 
   const ovenItem = (num) => equipment.find((e) => e.name === `Печь П-${num}`);
-  const machineItems = MACHINE_CHIPS.map((m) => ({
-    ...m,
-    item: equipment.find((e) => e.name.includes(m.label + '-')) ?? equipment.find((e) => e.type === m.code),
-  }));
+  // Сопоставляем машины по стабильному enum EquipmentType, а не по тексту
+  // названия (названия могут меняться при импорте CSV).
+  const machineItems = MACHINE_CHIPS;
 
-  // Переключатель доступности машины: PATCH /api/equipment/{id}/availability —
-  // бэкенд применяет его и к живому прогону (печь — вывод из серии, машина — простой)
-  const toggleAvailability = async (item) => {
-    if (!item) return;
+  // Переключение машины выполняется через API симулятора и не зависит от наличия
+  // строки в справочнике PostgreSQL. Коды КВ/ДСМ/ТВ/УВ — контракт /api/v1/machines.
+  const toggleMachine = async (machine) => {
+    const down = Boolean(machineUnavailable[machine.code]);
     try {
-      const updated = await setEquipmentAvailability(item.id, !item.available);
-      setEquipment((list) => list.map((e) => (e.id === updated.id ? updated : e)));
-      logOperatorAction(`${item.name}: доступность → ${updated.available ? 'доступна' : 'недоступна'}`).catch(() => {});
+      setBusy(true);
+      if (down) await machineUp(machine.code);
+      else await machineDown(machine.code, 0);
+      const list = await getMachines();
+      setMachineUnavailable(Object.fromEntries(list.map((item) => [item.code, Boolean(item.down)])));
+      setEquipment((items) => items.map((item) => item.type === machine.type
+        ? { ...item, available: !down } : item));
+      logOperatorAction(`${machine.title}: ${down ? 'возвращена в работу' : 'выведена из строя'}`)
+        .catch(() => {});
     } catch (e) {
-      setMessage(`Ошибка: ${e.message}`);
+      setMessage(`Ошибка управления ${machine.label}: ${e.message}`);
+    } finally {
+      setBusy(false);
     }
   };
+
 
   // Печь из живого прогона: вывод из серии / возврат — слот пропускается, порядок тот же
   const toggleOven = async (num) => {
@@ -271,11 +288,12 @@ export default function LeftPanel({ ovens = [] }) {
           <label className="block text-[11px] text-slate-500 mb-2 font-medium">Доступность · машины</label>
           <div className="grid grid-cols-4 gap-1.5">
             {machineItems.map((m) => {
-              const ok = m.item ? m.item.available : true;
+              const down = Boolean(machineUnavailable[m.code]);
               return (
-                <button key={m.code} title={m.title} onClick={() => m.item && toggleAvailability(m.item)}
-                  className={`${ok ? CHIP_OK : CHIP_OFF} rounded-md transition-colors text-[11px] py-2 font-semibold flex items-center justify-center gap-0.5`}>
-                  {ok ? '✓' : '✕'} {m.label}
+                <button key={m.code} type="button" title={`${m.title}: ${down ? 'выведена из строя' : 'в работе'}`}
+                  disabled={busy} onClick={() => toggleMachine(m)}
+                  className={`${down ? CHIP_OFF : CHIP_OK} rounded-md transition-colors text-[11px] py-2 font-semibold flex items-center justify-center gap-0.5 disabled:opacity-40 disabled:cursor-not-allowed`}>
+                  {down ? '✕' : '✓'} {m.label}
                 </button>
               );
             })}

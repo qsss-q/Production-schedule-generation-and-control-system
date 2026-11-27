@@ -89,6 +89,16 @@ class SimulatorServiceTest {
     }
 
     @Test
+    void applyingUnchangedConfigurationDoesNotResetSimulator() {
+        service.control(new ControlRequest("step", 100L));
+        long generation = service.generation();
+        long seed = service.state().seed();
+        service.configure(new ConfigRequest(null, seed, null, null, service.seriality()));
+        assertThat(service.state().simMinutes()).isEqualTo(100);
+        assertThat(service.generation()).isEqualTo(generation);
+    }
+
+    @Test
     void changingSeedRebuildsSimulator() {
         service.control(new ControlRequest("step", 100L));
         service.configure(new ConfigRequest(null, 777L, null, null, null));

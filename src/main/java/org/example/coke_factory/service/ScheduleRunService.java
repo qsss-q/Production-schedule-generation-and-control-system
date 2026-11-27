@@ -212,15 +212,11 @@ public class ScheduleRunService {
                 return;
             }
 
-            long revision = simulator.revision();
-            if (revision != lastRevision) {
-                lastRevision = revision;
-                ScheduleRun fresh = runs.findTopByStatusOrderByCreatedAtDesc(RunStatus.CALCULATED)
-                        .orElse(active);
-                RunDto recalculated = recalc(fresh, "пересчёт графика: изменились условия работы батареи");
-                syncStatuses(runs.findById(recalculated.id()).orElse(fresh));
-                return;
-            }
+            // Изменение фактического состояния батареи (отказ, доступность печи,
+            // простой машины) не является командой на перепланирование. Сохраняем
+            // план текущего прогона и обновляем только статусы/факты его операций.
+            // Новая версия создаётся исключительно явным POST /schedule-runs.
+            lastRevision = simulator.revision();
             syncStatuses(active);
         } catch (Exception e) {
             log.warn("Синхронизация графика не прошла: {}", e.getMessage());
@@ -256,7 +252,7 @@ public class ScheduleRunService {
         List<ScheduleOperation> changed = new ArrayList<>();
         for (ScheduleOperation op : ops) {
             OperationStatus status = op.getStatus();
-            if (status == OperationStatus.DONE || status == OperationStatus.IMPOSSIBLE) continue;
+            if (status == OperationStatus.DONE) continue;
 
             double plannedMin = SimulatorService.simMinutesOf(op.getPlannedStart());
             Simulator.DischargeRecord fact = bySlot.get(slotKey(op.getOvenNumber(), plannedMin));
@@ -291,6 +287,14 @@ public class ScheduleRunService {
                             "Печь выведена из серии или недоступна; требуется решение оператора");
                     changed.add(op);
                 }
+            } else if (status == OperationStatus.IMPOSSIBLE) {
+                // Печь вернулась в серию: возвращаем операцию в жизненный цикл
+                // исходного плана, не меняя её плановое время.
+                OperationStatus restored = now > plannedMin + OPERATION_MINUTES + lateToleranceMin(op, baseLateTolerance)
+                        ? OperationStatus.OVERDUE
+                        : now >= plannedMin ? OperationStatus.IN_PROGRESS : OperationStatus.PLANNED;
+                op.setStatus(restored);
+                changed.add(op);
             } else if (now > plannedMin + OPERATION_MINUTES + lateToleranceMin(op, baseLateTolerance)) {
                 if (status != OperationStatus.OVERDUE) {
                     op.setStatus(OperationStatus.OVERDUE);
@@ -354,9 +358,9 @@ public class ScheduleRunService {
     // ------------------------------------------------------------------
 
     /**
-     * Ручная правка времени операции: обязательная причина, пометка manual,
-     * запись в журнал и перенос выдачи в симуляторе — с последующими операциями
-     * (порядок печей не меняется, H1).
+     * Ручная правка времени одной операции: обязательная причина, пометка manual,
+     * запись в журнал. Соседние операции не сдвигаются; конфликт с порядком или
+     * минимальным интервалом отклоняется (H1).
      */
     @Transactional
     public ScheduleOperation manualEdit(long id, ManualEditRequest request) {
@@ -408,7 +412,6 @@ public class ScheduleRunService {
 
     /** План из текущих будущих операций действующего прогона — в симулятор. */
     private double[] applyPlanFromOperations(ScheduleRun run) {
-        double now = simulator.simMin();
         List<ScheduleOperation> future = operations.findByRunIdOrderByIdAsc(run.getId()).stream()
                 .filter(op -> op.getActualStart() == null)
                 .toList(); // ID — исходный порядок серийности; не сортируем по новому времени
@@ -420,18 +423,18 @@ public class ScheduleRunService {
                 ? active.getStepMinutes().doubleValue() : simulator.deltaMin();
         double minGap = ScheduleInput.forcingFloorMin(configuredStep);
 
+        // Ручной перенос меняет только выбранную операцию. Если новое время
+        // нарушает порядок серийности или минимальный интервал, отклоняем запрос,
+        // а не сдвигаем соседние печи автоматически.
         double[] plan = new double[future.size()];
         for (int i = 0; i < plan.length; i++) {
-            double desired = Math.max(SimulatorService.simMinutesOf(future.get(i).getPlannedStart()), now);
-            plan[i] = i == 0 ? desired : Math.max(desired, plan[i - 1] + minGap);
+            plan[i] = SimulatorService.simMinutesOf(future.get(i).getPlannedStart());
+            if (i > 0 && plan[i] - plan[i - 1] < minGap - 1e-9) {
+                throw new IllegalArgumentException(
+                        "перенос нарушает порядок или минимальный интервал %.1f мин; соседние операции не изменены"
+                                .formatted(minGap));
+            }
         }
-        plan = applyShiftWindow(plan, active, minGap);
-        for (int i = 0; i < future.size(); i++) {
-            LocalDateTime start = SimulatorService.toPlantTime(plan[i]);
-            future.get(i).setPlannedStart(start);
-            future.get(i).setPlannedEnd(start.plusMinutes(OPERATION_MINUTES));
-        }
-        operations.saveAll(future);
         simulator.applyPlan(plan);
         return plan;
     }
