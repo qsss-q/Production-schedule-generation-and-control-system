@@ -70,6 +70,15 @@ public class ScheduleRunService {
     /** Ревизия на момент последнего пересчёта — чтобы ловить новые возмущения. */
     private long lastRevision;
 
+    /**
+     * Поколение симулятора, для которого посчитан действующий прогон. Симулятор живёт
+     * в памяти: после перезапуска приложения, сброса, загрузки снимка или смены seed/схемы
+     * он начинается заново, а прогон в БД остался бы «действующим» с операциями другой
+     * временной линии (массовые OVERDUE, ручная правка ставила бы чужой план). -1 — ещё
+     * ни одного прогона в этом запуске приложения.
+     */
+    private long runGeneration = -1;
+
     // ------------------------------------------------------------------
     // запросы
     // ------------------------------------------------------------------
@@ -166,6 +175,7 @@ public class ScheduleRunService {
                 ? 1 : active.getDefaultPriority();
         int created = createOperations(run, plan, input.ovens(), manualOps, defaultPriority);
         lastRevision = simulator.revision();
+        runGeneration = simulator.generation();
 
         audit.log("SCHEDULE_RUN", "ScheduleRun", null,
                 "Прогон %s: алгоритм %s, схема %s, операций %d. %s"
@@ -197,6 +207,11 @@ public class ScheduleRunService {
                     .orElse(null);
             if (active == null) return;
 
+            if (simulator.generation() != runGeneration) {
+                archiveStale(active);
+                return;
+            }
+
             long revision = simulator.revision();
             if (revision != lastRevision) {
                 lastRevision = revision;
@@ -210,6 +225,20 @@ public class ScheduleRunService {
         } catch (Exception e) {
             log.warn("Синхронизация графика не прошла: {}", e.getMessage());
         }
+    }
+
+    /**
+     * Прогон относится к прежнему состоянию симулятора: переводим в архив (данные и
+     * история остаются в БД), график нужно сформировать заново от текущего состояния.
+     */
+    @Transactional
+    public void archiveStale(ScheduleRun stale) {
+        stale.setStatus(RunStatus.ARCHIVED);
+        runs.save(stale);
+        lastRevision = simulator.revision();
+        audit.log("SCHEDULE_RUN_ARCHIVED", "ScheduleRun", null,
+                "Прогон %s переведён в архив: симулятор перезапущен или его состояние заменено. Сформируйте график заново."
+                        .formatted(shortId(stale.getId())));
     }
 
     /** Живые статусы операций: факт — история выдач симулятора (docs/09 §7 п.3). */

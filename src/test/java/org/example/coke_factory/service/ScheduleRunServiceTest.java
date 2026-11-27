@@ -181,6 +181,28 @@ class ScheduleRunServiceTest {
     }
 
     @Test
+    void simulatorReset_archivesStaleRun_insteadOfTrackingOtherTimeline() {
+        RunDto run = service.createRun(new CreateRunRequest("b1_fifo", null, null, null, null, null), "тест");
+        simulator.control(new SimulatorService.ControlRequest("step", 60L));
+        service.syncTick();
+        assertThat(runStore.get(run.id()).getStatus()).isEqualTo(RunStatus.CALCULATED);
+
+        // сброс (так же ведут себя перезапуск приложения и загрузка снимка): новая временная линия
+        simulator.control(new SimulatorService.ControlRequest("reset", null));
+        service.syncTick();
+
+        assertThat(runStore.get(run.id()).getStatus()).isEqualTo(RunStatus.ARCHIVED);
+        assertThat(service.activeRun()).isEmpty();
+        assertThat(opStore).noneMatch(op -> op.getStatus() == OperationStatus.OVERDUE);
+        verify(audit).log(contains("SCHEDULE_RUN_ARCHIVED"), any(), any(), any());
+
+        // новый график формируется от текущего состояния и снова отслеживается
+        RunDto fresh = service.createRun(new CreateRunRequest("b1_fifo", null, null, null, null, null), "после сброса");
+        service.syncTick();
+        assertThat(runStore.get(fresh.id()).getStatus()).isEqualTo(RunStatus.CALCULATED);
+    }
+
+    @Test
     void statuses_followSimulatorFact() {
         service.createRun(new CreateRunRequest("b1_fifo", null, null, null, null, null), "тест");
 

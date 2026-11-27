@@ -39,6 +39,9 @@ public class SimulatorService {
     private boolean running = false;     // после старта приложения симуляция на паузе, ПУСК запускает
     private int speedFactor = 60;        // x60: 1 с = 1 мин симуляции
     private double carryMinutes = 0;     // дробный остаток минут между тиками
+    /** Поколение живого симулятора: растёт при каждой замене экземпляра (сброс, загрузка
+     *  снимка, смена seed/схемы, импорт печей). План прежнего поколения к новому не относится. */
+    private long generation = 0;
 
     // ------------------------------------------------------------------
     // тик симуляции
@@ -223,6 +226,7 @@ public class SimulatorService {
             }
             case "reset" -> {
                 sim = new Simulator(config);
+                generation++;
                 running = false;
                 carryMinutes = 0;
             }
@@ -260,6 +264,7 @@ public class SimulatorService {
                     config.ovenFaultRepairMin(),
                     r.seed() != null ? r.seed() : config.seed());
             sim = new Simulator(config);
+            generation++;
             running = false;
             carryMinutes = 0;
         }
@@ -292,6 +297,7 @@ public class SimulatorService {
         Simulator restored = Simulator.restore(state);
         config = restored.config();
         sim = restored;
+        generation++;
         running = false;
         carryMinutes = 0;
         return state();
@@ -339,6 +345,11 @@ public class SimulatorService {
     }
 
     /** Возмущений с начала прогона: изменилось — план стоит пересчитать. */
+    /** Поколение живого симулятора (см. поле {@code generation}). */
+    public synchronized long generation() {
+        return generation;
+    }
+
     public synchronized long revision() {
         return sim.revision();
     }
@@ -416,6 +427,7 @@ public class SimulatorService {
                 config.unloadMin(), config.loadMin(), config.towerDistanceM(),
                 config.ovenFaultPerHour(), config.ovenFaultRepairMin(), config.seed());
         sim = new Simulator(config);
+        generation++;
         running = false;
         carryMinutes = 0;
         for (Integer oven : unavailableOvens)

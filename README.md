@@ -21,7 +21,8 @@ cp .env.example .env
 docker compose up --build
 ```
 
-docker compose logs tunnel - получить ссылку
+Публичная ссылка через Cloudflare (туннель включается только явно, API без авторизации):
+`docker compose --profile tunnel up --build`, затем `docker compose logs tunnel` — получить ссылку.
 
 можно открыть и по локалхосту:
 - Интерфейс: http://localhost:5173
@@ -44,7 +45,6 @@ docker compose logs tunnel - получить ссылку
    В PowerShell: `$env:SPRING_DATASOURCE_PASSWORD = "ваш_пароль"`.
 4. Запустить `CokeFactoryApplication`.
 
-в dockeryaml поставить тот же пароль
 ### Сборка и тесты
 
 ```bash
@@ -129,6 +129,7 @@ simulator/      симулятор батареи (код Вани, отдель
 ## Итоговая документация
 
 Подробное описание архитектуры, API, PostgreSQL, Docker, тестов и ограничений: [`docs/14-итоговая-документация-проекта.md`](docs/14-итоговая-документация-проекта.md).
+Результаты проверки перед защитой, исправления и известные риски: [`docs/15-проверка-перед-защитой.md`](docs/15-проверка-перед-защитой.md).
 
 ## Тестирование API
 

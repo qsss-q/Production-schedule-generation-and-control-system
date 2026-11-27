@@ -45,8 +45,12 @@ services:
       - coke-app
     restart: on-failure
 
- # временный туннель
+  # Временный публичный туннель Cloudflare (ссылка: docker compose logs tunnel).
+  # Включается только явно: docker compose --profile tunnel up --build
+  # API не защищено авторизацией, поэтому по умолчанию система наружу не публикуется,
+  # а без интернета обычный запуск не зависит от cloudflared.
   tunnel:
+    profiles: ["tunnel"]
     image: cloudflare/cloudflared:latest
     container_name: coke_factory_tunnel
     command: tunnel --no-autoupdate --url http://coke-front:80

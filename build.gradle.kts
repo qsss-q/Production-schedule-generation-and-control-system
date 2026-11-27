@@ -13,6 +13,12 @@ java {
 
 repositories { mavenCentral() }
 
+// Testcontainers 1.20.x (версия из BOM Spring Boot 3.4.4) обращается к Docker по API 1.32,
+// а Docker Engine 29+ / свежий Docker Desktop принимают только API >= 1.40/1.44:
+// PostgresApiIntegrationTest падал с "Could not find a valid Docker environment".
+// В 1.21.4 клиент договаривается о версии API с демоном.
+extra["testcontainers.version"] = "1.21.4"
+
 dependencies {
     // Веб (REST) и работа с БД
     implementation("org.springframework.boot:spring-boot-starter-web")
@@ -33,8 +39,8 @@ dependencies {
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     // Реальный PostgreSQL в интеграционных тестах (не H2 и не моки)
-    testImplementation("org.testcontainers:junit-jupiter:1.20.4")
-    testImplementation("org.testcontainers:postgresql:1.20.4")
+    testImplementation("org.testcontainers:junit-jupiter")
+    testImplementation("org.testcontainers:postgresql")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
